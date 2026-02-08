@@ -1,8 +1,11 @@
 """Text normalization: lowercasing, whitespace cleanup, synonym replacement."""
 
+import logging
 import re
 import hashlib
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_REPLACEMENTS: List[Tuple[str, str]] = [
     (r"\bfirst\s+(\d+)\b", r"top \1"),
@@ -48,6 +51,7 @@ def normalize_question(
     """
     text = " ".join(question.split())
     if not text:
+        logger.debug("Normalization: empty input")
         return ""
 
     text = text.lower()
@@ -62,6 +66,7 @@ def normalize_question(
     text = re.sub(r"[.!?]+$", "", text)
 
     text = " ".join(text.split())
+    logger.debug("Normalized: '%s' -> '%s'", question[:60], text[:60])
     return text
 
 

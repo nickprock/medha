@@ -70,24 +70,30 @@ class OpenAIAdapter(BaseEmbedder):
         """
         assert self._client is not None
         try:
+            logger.debug("OpenAI aembed: text_len=%d, model='%s'", len(text), self._model_name)
             kwargs = {"input": text, "model": self._model_name}
             if self._dimensions is not None:
                 kwargs["dimensions"] = self._dimensions
             response = await self._client.embeddings.create(**kwargs)
+            logger.debug("OpenAI aembed: done, dim=%d", len(response.data[0].embedding))
             return response.data[0].embedding
         except AuthenticationError as e:
+            logger.error("OpenAI authentication failed: %s", e)
             raise EmbeddingError(
                 f"OpenAI authentication failed: {e}"
             ) from e
         except RateLimitError as e:
+            logger.warning("OpenAI rate limit exceeded: %s", e)
             raise EmbeddingError(
                 f"OpenAI rate limit exceeded: {e}"
             ) from e
         except APIConnectionError as e:
+            logger.error("OpenAI API connection error: %s", e)
             raise EmbeddingError(
                 f"OpenAI API connection error: {e}"
             ) from e
         except Exception as e:
+            logger.error("OpenAI aembed failed: %s", e)
             raise EmbeddingError(
                 f"Failed to embed text with OpenAI model '{self._model_name}': {e}"
             ) from e
@@ -100,26 +106,32 @@ class OpenAIAdapter(BaseEmbedder):
         """
         assert self._client is not None
         try:
+            logger.debug("OpenAI aembed_batch: %d texts, model='%s'", len(texts), self._model_name)
             kwargs = {"input": texts, "model": self._model_name}
             if self._dimensions is not None:
                 kwargs["dimensions"] = self._dimensions
             response = await self._client.embeddings.create(**kwargs)
             # Sort by index to preserve input order
             sorted_data = sorted(response.data, key=lambda x: x.index)
+            logger.debug("OpenAI aembed_batch: done, %d vectors", len(sorted_data))
             return [item.embedding for item in sorted_data]
         except AuthenticationError as e:
+            logger.error("OpenAI authentication failed: %s", e)
             raise EmbeddingError(
                 f"OpenAI authentication failed: {e}"
             ) from e
         except RateLimitError as e:
+            logger.warning("OpenAI rate limit exceeded: %s", e)
             raise EmbeddingError(
                 f"OpenAI rate limit exceeded: {e}"
             ) from e
         except APIConnectionError as e:
+            logger.error("OpenAI API connection error: %s", e)
             raise EmbeddingError(
                 f"OpenAI API connection error: {e}"
             ) from e
         except Exception as e:
+            logger.error("OpenAI aembed_batch failed: %s", e)
             raise EmbeddingError(
                 f"Failed to embed batch with OpenAI model '{self._model_name}': {e}"
             ) from e

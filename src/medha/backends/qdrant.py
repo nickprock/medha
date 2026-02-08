@@ -97,6 +97,7 @@ class QdrantBackend(VectorStorageBackend):
             return
 
         try:
+            logger.debug("Initializing collection '%s' (dim=%d)", collection_name, dimension)
             collections = await self.client.get_collections()
             existing = {c.name for c in collections.collections}
 
@@ -161,6 +162,12 @@ class QdrantBackend(VectorStorageBackend):
             StorageError: If the search fails.
         """
         try:
+            logger.debug(
+                "Searching '%s': limit=%d, threshold=%.3f",
+                collection_name,
+                limit,
+                score_threshold,
+            )
             search_params = self._build_search_params()
             response = await self.client.query_points(
                 collection_name=collection_name,
@@ -170,7 +177,17 @@ class QdrantBackend(VectorStorageBackend):
                 search_params=search_params,
                 with_payload=True,
             )
-            return [self._point_to_cache_result(point) for point in response.points]
+            results = [self._point_to_cache_result(point) for point in response.points]
+            if results:
+                logger.debug(
+                    "Search '%s' returned %d results (top score=%.4f)",
+                    collection_name,
+                    len(results),
+                    results[0].score,
+                )
+            else:
+                logger.debug("Search '%s' returned 0 results", collection_name)
+            return results
         except StorageError:
             raise
         except Exception as e:
@@ -258,6 +275,12 @@ class QdrantBackend(VectorStorageBackend):
                 )
 
             next_offset_str = str(next_offset) if next_offset is not None else None
+            logger.debug(
+                "Scroll '%s': returned %d records, has_more=%s",
+                collection_name,
+                len(results),
+                next_offset_str is not None,
+            )
             return results, next_offset_str
         except StorageError:
             raise
@@ -414,6 +437,7 @@ class QdrantBackend(VectorStorageBackend):
     def _build_client(self) -> AsyncQdrantClient:
         """Create the Qdrant client based on settings.mode."""
         mode = self._settings.qdrant_mode
+        logger.debug("Building Qdrant client for mode='%s'", mode)
 
         if mode == "memory":
             return AsyncQdrantClient(":memory:")
@@ -421,8 +445,10 @@ class QdrantBackend(VectorStorageBackend):
             url = self._settings.qdrant_url or (
                 f"http://{self._settings.qdrant_host}:{self._settings.qdrant_port}"
             )
+            logger.debug("Qdrant Docker URL: %s", url)
             return AsyncQdrantClient(url=url)
         elif mode == "cloud":
+            logger.debug("Qdrant Cloud URL: %s", self._settings.qdrant_url)
             return AsyncQdrantClient(
                 url=self._settings.qdrant_url,
                 api_key=self._settings.qdrant_api_key,

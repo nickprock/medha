@@ -58,32 +58,54 @@ class ParameterExtractor:
                 can be extracted.
         """
         if not template.parameters:
+            logger.debug("No parameters required for template '%s'", template.intent)
             return {}
+
+        logger.debug(
+            "Extracting params for template '%s': required=%s",
+            template.intent,
+            template.parameters,
+        )
 
         # 1. Regex patterns from template
         params = self._extract_via_regex(question, template)
+        if params:
+            logger.debug("Regex extracted: %s", params)
         if len(params) == len(template.parameters):
+            logger.debug("All params resolved via regex")
             return params
 
         # 2. spaCy NER
         if self._spacy_available:
             spacy_params = self._extract_via_spacy(question, template)
+            if spacy_params:
+                logger.debug("spaCy extracted: %s", spacy_params)
             for key, value in spacy_params.items():
                 if key not in params:
                     params[key] = value
             if len(params) == len(template.parameters):
+                logger.debug("All params resolved via regex+spaCy")
                 return params
 
         # 3. Heuristic fallback
         heuristic_params = self._extract_via_heuristics(question, template)
+        if heuristic_params:
+            logger.debug("Heuristic extracted: %s", heuristic_params)
         for key, value in heuristic_params.items():
             if key not in params:
                 params[key] = value
 
         if len(params) == len(template.parameters):
+            logger.debug("All params resolved via heuristics fallback")
             return params
 
         missing = set(template.parameters) - set(params)
+        logger.warning(
+            "Incomplete extraction for template '%s': missing=%s, got=%s",
+            template.intent,
+            missing,
+            params,
+        )
         raise ParameterExtractionError(
             f"Could not extract parameters {missing} from: {question!r}"
         )
@@ -143,6 +165,9 @@ class ParameterExtractor:
         for param, value in parameters.items():
             safe_value = self._sanitize_value(value)
             if not safe_value:
+                logger.warning(
+                    "Parameter '%s' empty after sanitization (raw='%s')", param, value
+                )
                 raise ParameterExtractionError(
                     f"Parameter {param!r} value {value!r} is empty after sanitization"
                 )
@@ -151,10 +176,12 @@ class ParameterExtractor:
         # Check for remaining unfilled placeholders
         remaining = re.findall(r"\{(\w+)\}", query)
         if remaining:
+            logger.warning("Unfilled placeholders after render: %s", remaining)
             raise ParameterExtractionError(
                 f"Unfilled placeholders in rendered query: {remaining}"
             )
 
+        logger.debug("Rendered query: '%s'", query[:80])
         return query
 
     # --- Private methods ---

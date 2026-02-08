@@ -63,11 +63,14 @@ class FastEmbedAdapter(BaseEmbedder):
         to avoid blocking the event loop.
         """
         try:
+            logger.debug("FastEmbed aembed: text_len=%d", len(text))
             result = await asyncio.to_thread(self._embed_sync, text)
+            logger.debug("FastEmbed aembed: done, dim=%d", len(result))
             return result
         except EmbeddingError:
             raise
         except Exception as e:
+            logger.error("FastEmbed aembed failed: %s", e)
             raise EmbeddingError(
                 f"Failed to embed text with model '{self._model_name}': {e}"
             ) from e
@@ -78,11 +81,14 @@ class FastEmbedAdapter(BaseEmbedder):
         Uses fastembed's native batching for efficiency.
         """
         try:
+            logger.debug("FastEmbed aembed_batch: %d texts", len(texts))
             results = await asyncio.to_thread(self._embed_batch_sync, texts)
+            logger.debug("FastEmbed aembed_batch: done, %d vectors", len(results))
             return results
         except EmbeddingError:
             raise
         except Exception as e:
+            logger.error("FastEmbed aembed_batch failed: %s", e)
             raise EmbeddingError(
                 f"Failed to embed batch with model '{self._model_name}': {e}"
             ) from e
