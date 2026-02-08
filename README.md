@@ -151,6 +151,4 @@ This project is licensed under the MIT License - see the [LICENSE](https://githu
 
 ---
 
-<div align="center">
-<p>Built with ❤️ by <strong>ArchAI Labs</strong></p>
-</div>
+*Built with ❤️ by **[ArchAI Labs](https://github.com/ArchAI-Labs)***
