@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # --- Search thresholds ---
     score_threshold_exact: float = Field(default=0.99, ge=0.0, le=1.0)
     score_threshold_semantic: float = Field(default=0.90, ge=0.0, le=1.0)
-    score_threshold_template: float = Field(default=0.85, ge=0.0, le=1.0)
+    score_threshold_template: float = Field(default=0.70, ge=0.0, le=1.0)
     score_threshold_fuzzy: float = Field(default=85.0, ge=0.0, le=100.0, description="Fuzzy match threshold (0-100)")
 
     # --- L1 Cache ---
@@ -50,6 +50,25 @@ class Settings(BaseSettings):
         description="Quantization method. Binary only for dim >= 512",
     )
     on_disk: bool = Field(default=False, description="Store vectors on disk (large datasets)")
+
+    # --- Quantization search ---
+    quantization_rescore: bool = Field(
+        default=True,
+        description="Re-score top results using original vectors after quantized search",
+    )
+    quantization_oversampling: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description="Oversampling factor for quantized search (e.g. 2.0 fetches 2x candidates before re-scoring). None = Qdrant default",
+    )
+    quantization_ignore: bool = Field(
+        default=False,
+        description="Bypass quantized vectors and search only original vectors",
+    )
+    quantization_always_ram: bool = Field(
+        default=True,
+        description="Keep quantized vectors in RAM. Combined with on_disk=True enables hybrid storage (original on disk, quantized in RAM)",
+    )
 
     # --- Template loading ---
     template_file: Optional[str] = Field(default=None, description="Path to JSON template file")
