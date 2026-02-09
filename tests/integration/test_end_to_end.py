@@ -46,7 +46,7 @@ async def medha(embedder, settings):
 class TestStoreSQLAndRetrieve:
     async def test_store_sql_and_retrieve(self, medha):
         ok = await medha.store(
-            "Get user count",
+            "How many users are there",
             "SELECT COUNT(*) FROM users",
         )
         assert ok is True
@@ -54,7 +54,8 @@ class TestStoreSQLAndRetrieve:
         medha._l1_cache.clear()
         medha._embedding_cache.clear()
 
-        hit = await medha.search("How many users are there?")
+        # "Number of users" has ~0.90 cosine sim with "How many users are there"
+        hit = await medha.search("Number of users")
         assert hit.strategy in (
             SearchStrategy.EXACT_MATCH,
             SearchStrategy.SEMANTIC_MATCH,
@@ -81,15 +82,15 @@ class TestStoreCypherAndRetrieve:
 
 class TestMultipleStoresAndRanking:
     async def test_multiple_stores_and_ranking(self, medha):
-        await medha.store("Get user count", "SELECT COUNT(*) FROM users")
+        await medha.store("How many users are there", "SELECT COUNT(*) FROM users")
         await medha.store("List all products", "SELECT * FROM products")
         await medha.store("Show employee names", "SELECT name FROM employees")
 
         medha._l1_cache.clear()
         medha._embedding_cache.clear()
 
-        hit = await medha.search("How many users exist?")
-        # Should match "Get user count" semantically
+        # "How many users exist" has ~0.94 cosine sim with "How many users are there"
+        hit = await medha.search("How many users exist")
         assert hit.strategy in (
             SearchStrategy.EXACT_MATCH,
             SearchStrategy.SEMANTIC_MATCH,

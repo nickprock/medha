@@ -104,3 +104,44 @@ class TestNoSpacyFallback:
         )
         params = ext.extract("Show top 5 products", template)
         assert params == {"count": "5", "entity": "products"}
+
+
+class TestExtractEntities:
+    def test_extract_numbers(self, extractor):
+        entities = extractor.extract_entities("Show top 5 products limit 10")
+        assert "number" in entities
+        assert "5" in entities["number"]
+        assert "10" in entities["number"]
+
+    def test_extract_capitalized_names(self, extractor):
+        # Use lowercase "find" so only "John Smith" is capitalized
+        entities = extractor.extract_entities("find John Smith in the database")
+        assert "person" in entities
+        assert "John Smith" in entities["person"]
+
+    def test_extract_empty_text(self, extractor):
+        entities = extractor.extract_entities("no entities here")
+        assert "number" not in entities
+
+
+class TestExtractNoParameters:
+    def test_extract_no_params_required(self, extractor):
+        template = QueryTemplate(
+            intent="list_all",
+            template_text="Show all records",
+            query_template="SELECT * FROM records",
+        )
+        params = extractor.extract("Show all records", template)
+        assert params == {}
+
+
+class TestExtractionFailure:
+    def test_missing_params_raises(self, extractor):
+        template = QueryTemplate(
+            intent="multi",
+            template_text="{a} and {b}",
+            query_template="SELECT {a}, {b}",
+            parameters=["a", "b"],
+        )
+        with pytest.raises(ParameterExtractionError):
+            extractor.extract("nothing matches here", template)

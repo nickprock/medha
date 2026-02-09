@@ -146,6 +146,29 @@ class TestCount:
         assert await backend.count(COLLECTION) == 3
 
 
+class TestUpdateUsageCount:
+    async def test_update_usage_count(self, backend, embedder):
+        await backend.initialize(COLLECTION, DIMENSION)
+
+        entry = await _make_entry(embedder, "usage test", "SELECT 1")
+        await backend.upsert(COLLECTION, [entry])
+
+        vec = await embedder.aembed("usage test")
+        results = await backend.search(COLLECTION, vec, limit=1)
+        initial_count = results[0].usage_count
+
+        # Increment usage count
+        await backend.update_usage_count(COLLECTION, entry.id)
+
+        results = await backend.search(COLLECTION, vec, limit=1)
+        assert results[0].usage_count == initial_count + 1
+
+    async def test_update_usage_count_nonexistent(self, backend):
+        await backend.initialize(COLLECTION, DIMENSION)
+        # Should not raise — just logs a warning
+        await backend.update_usage_count(COLLECTION, "nonexistent-id")
+
+
 class TestCloseAndReopen:
     async def test_close_and_reopen(self):
         settings = Settings(qdrant_mode="memory")

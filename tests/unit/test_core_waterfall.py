@@ -1,13 +1,15 @@
 """Unit tests for medha.core.Medha waterfall search logic."""
 
+import json
 import pytest
 from typing import Dict, List, Optional
 from unittest.mock import AsyncMock
 
 from medha.config import Settings
 from medha.core import Medha
+from medha.exceptions import TemplateError
 from medha.interfaces.storage import VectorStorageBackend
-from medha.types import CacheEntry, CacheResult, CacheHit, SearchStrategy
+from medha.types import CacheEntry, CacheResult, CacheHit, QueryTemplate, SearchStrategy
 from tests.conftest import MockEmbedder
 
 
@@ -313,3 +315,102 @@ class TestFuzzyFallback:
             SearchStrategy.FUZZY_MATCH,
             SearchStrategy.NO_MATCH,
         )
+
+
+class TestBatchStore:
+    async def test_store_batch(self, medha_instance):
+        await medha_instance.start()
+        entries = [
+            {"question": "How many users?", "generated_query": "SELECT COUNT(*) FROM users"},
+            {"question": "List products", "generated_query": "SELECT * FROM products",
+             "response_summary": "all products", "template_id": "list_all"},
+        ]
+        ok = await medha_instance.store_batch(entries)
+        assert ok is True
+
+    async def test_store_batch_empty(self, medha_instance):
+        await medha_instance.start()
+        ok = await medha_instance.store_batch([])
+        assert ok is True
+
+
+class TestLoadTemplatesFromFile:
+    async def test_load_from_json(self, medha_instance, tmp_path):
+        await medha_instance.start()
+        templates_data = [
+            {
+                "intent": "count",
+                "template_text": "How many {entity}",
+                "query_template": "SELECT COUNT(*) FROM {entity}",
+                "parameters": ["entity"],
+            }
+        ]
+        tpl_file = tmp_path / "templates.json"
+        tpl_file.write_text(json.dumps(templates_data))
+
+        await medha_instance.load_templates_from_file(str(tpl_file))
+        assert len(medha_instance._templates) == 1
+        assert medha_instance._templates[0].intent == "count"
+
+    async def test_load_from_invalid_file(self, medha_instance):
+        await medha_instance.start()
+        with pytest.raises(TemplateError):
+            await medha_instance.load_templates_from_file("/nonexistent/path.json")
+
+
+class TestStartWithTemplates:
+    async def test_start_with_templates_syncs(self, mock_backend, waterfall_settings, sample_templates):
+        """Templates passed to constructor are synced to backend on start()."""
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="tpl_sync",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+            templates=sample_templates,
+        )
+        await m.start()
+        count = await mock_backend.count("tpl_sync_templates")
+        assert count >= len(sample_templates)
+
+
+class TestEmbeddingCacheEviction:
+    async def test_embedding_cache_evicts_oldest(self, medha_instance):
+        await medha_instance.start()
+        medha_instance._embedding_cache_max = 2
+        # Fill cache with 3 entries to trigger eviction
+        await medha_instance.store("q1", "SELECT 1")
+        await medha_instance.store("q2", "SELECT 2")
+        await medha_instance.store("q3", "SELECT 3")
+        assert len(medha_instance._embedding_cache) <= 2
+
+
+class TestSyncWrappers:
+    def test_store_sync(self, mock_backend, waterfall_settings):
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="sync_test",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        # start() must be called before store — use _run_sync for it too
+        from medha.interfaces.embedder import BaseEmbedder
+        BaseEmbedder._run_sync(m.start())
+
+        ok = m.store_sync("test question", "SELECT 1")
+        assert ok is True
+
+    def test_search_sync(self, mock_backend, waterfall_settings):
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="sync_test",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        from medha.interfaces.embedder import BaseEmbedder
+        BaseEmbedder._run_sync(m.start())
+
+        hit = m.search_sync("no match xyz")
+        assert hit.strategy == SearchStrategy.NO_MATCH

@@ -58,3 +58,27 @@ class TestMockEmbedder:
         v1 = await mock_embedder.aembed("apples")
         v2 = await mock_embedder.aembed("database schema")
         assert v1 != v2
+
+
+class TestSyncWrappers:
+    def test_embed_sync(self, mock_embedder):
+        vec = mock_embedder.embed("test sync")
+        assert len(vec) == 384
+        assert all(isinstance(v, float) for v in vec)
+
+    def test_embed_batch_sync(self, mock_embedder):
+        vecs = mock_embedder.embed_batch(["a", "b"])
+        assert len(vecs) == 2
+        assert len(vecs[0]) == 384
+
+
+class TestEmbeddingsInit:
+    def test_get_fastembed_adapter(self):
+        from medha.embeddings import get_fastembed_adapter
+        cls = get_fastembed_adapter()
+        assert cls.__name__ == "FastEmbedAdapter"
+
+    def test_get_openai_adapter(self):
+        from medha.embeddings import get_openai_adapter
+        cls = get_openai_adapter()
+        assert cls.__name__ == "OpenAIAdapter"
