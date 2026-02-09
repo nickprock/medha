@@ -78,6 +78,14 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 
+[tool.coverage.run]
+source = ["medha"]
+
+[tool.coverage.report]
+omit = [
+    "src/medha/embeddings/openai_adapter.py",
+]
+
 [tool.mypy]
 python_version = "3.10"
 strict = true
