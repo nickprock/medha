@@ -1,6 +1,6 @@
 # Medha
 
-![medha_logo](https://github.com/ArchAI-Labs/medha/blob/main/img/medha_logo.png)
+![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_logo.png)
 
 ## Semantic Memory for AI Data Agents
 
