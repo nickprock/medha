@@ -811,6 +811,10 @@ class Medha:
             else:
                 # We are the first → register a Future so others can join
                 our_future = asyncio.get_running_loop().create_future()
+                # Suppress "Future exception was never retrieved" if no waiter joins
+                our_future.add_done_callback(
+                    lambda f: f.exception() if not f.cancelled() and f.done() and f.exception() else None
+                )
                 self._pending_embeddings[cache_key] = our_future
                 logger.debug("Embedding cache MISS for key=%s, computing...", cache_key[:8])
 
