@@ -145,6 +145,14 @@ def medha_instance(mock_backend, waterfall_settings):
 # ---------------------------------------------------------------------------
 
 class TestL1Cache:
+    async def test_l1_cache_hit_strategy_is_l1_cache(self, medha_instance):
+        """A hit served from L1 must report strategy=L1_CACHE regardless of origin."""
+        await medha_instance.start()
+        await medha_instance.store("How many users?", "SELECT COUNT(*) FROM users")
+        # store() populates L1; next search should come from L1
+        hit = await medha_instance.search("How many users?")
+        assert hit.strategy == SearchStrategy.L1_CACHE
+
     async def test_l1_cache_hit(self, medha_instance):
         await medha_instance.start()
         await medha_instance.store("How many users?", "SELECT COUNT(*) FROM users")
@@ -333,6 +341,29 @@ class TestBatchStore:
         ok = await medha_instance.store_batch([])
         assert ok is True
 
+    async def test_store_batch_populates_l1(self, medha_instance):
+        """store_batch must populate L1 cache, consistent with store()."""
+        await medha_instance.start()
+        entries = [
+            {"question": "batch q one", "generated_query": "SELECT 1"},
+            {"question": "batch q two", "generated_query": "SELECT 2"},
+        ]
+        await medha_instance.store_batch(entries)
+        # Both questions should now be in L1
+        assert len(medha_instance._l1_cache) >= 2
+        hit = await medha_instance.search("batch q one")
+        assert hit.strategy == SearchStrategy.L1_CACHE
+        assert hit.generated_query == "SELECT 1"
+
+    async def test_store_batch_populates_embedding_cache(self, medha_instance):
+        """store_batch must populate the embedding cache with computed vectors."""
+        await medha_instance.start()
+        medha_instance._embedding_cache.clear()
+        await medha_instance.store_batch([
+            {"question": "cached q", "generated_query": "SELECT 1"},
+        ])
+        assert len(medha_instance._embedding_cache) >= 1
+
 
 class TestLoadTemplatesFromFile:
     async def test_load_from_json(self, medha_instance, tmp_path):
@@ -370,7 +401,7 @@ class TestStartWithTemplates:
             templates=sample_templates,
         )
         await m.start()
-        count = await mock_backend.count("tpl_sync_templates")
+        count = await mock_backend.count("__medha_templates_tpl_sync")
         assert count >= len(sample_templates)
 
 
@@ -383,6 +414,64 @@ class TestEmbeddingCacheEviction:
         await medha_instance.store("q2", "SELECT 2")
         await medha_instance.store("q3", "SELECT 3")
         assert len(medha_instance._embedding_cache) <= 2
+
+
+class TestAsyncCacheLocks:
+    """Verify that async locks exist on both in-memory caches."""
+
+    def test_l1_cache_lock_is_asyncio_lock(self, medha_instance):
+        import asyncio
+        assert hasattr(medha_instance, "_l1_lock")
+        assert isinstance(medha_instance._l1_lock, asyncio.Lock)
+
+    def test_embedding_cache_lock_is_asyncio_lock(self, medha_instance):
+        import asyncio
+        assert hasattr(medha_instance, "_embedding_cache_lock")
+        assert isinstance(medha_instance._embedding_cache_lock, asyncio.Lock)
+
+    async def test_concurrent_searches_do_not_corrupt_l1_cache(
+        self, medha_instance
+    ):
+        """Multiple concurrent searches on the same question must not corrupt L1."""
+        import asyncio
+        await medha_instance.start()
+        await medha_instance.store("concurrent question", "SELECT 1")
+        medha_instance._l1_cache.clear()
+        medha_instance._embedding_cache.clear()
+
+        results = await asyncio.gather(
+            *[medha_instance.search("concurrent question") for _ in range(10)]
+        )
+        assert all(r.strategy != SearchStrategy.ERROR for r in results)
+        assert len(medha_instance._l1_cache) <= medha_instance._l1_max_size
+
+
+class TestTemplateCollectionNaming:
+    """Verify the template collection uses the __medha_templates_ prefix."""
+
+    def test_template_collection_prefix(self, mock_backend, waterfall_settings):
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="my_cache",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        assert m._template_collection == "__medha_templates_my_cache"
+
+    def test_template_collection_no_suffix_collision(
+        self, mock_backend, waterfall_settings
+    ):
+        """A collection named 'my_templates' must not produce 'my_templates_templates'."""
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="my_templates",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        assert m._template_collection == "__medha_templates_my_templates"
+        assert m._template_collection != "my_templates_templates"
 
 
 class TestSyncWrappers:

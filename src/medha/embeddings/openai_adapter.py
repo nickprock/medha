@@ -1,15 +1,19 @@
 """OpenAI embeddings adapter implementing the BaseEmbedder interface."""
 
+from __future__ import annotations
+
 import logging
 from typing import List
 
 try:
     from openai import AsyncOpenAI, APIConnectionError, AuthenticationError, RateLimitError
+    _OPENAI_AVAILABLE = True
 except ImportError:
-    raise ImportError(
-        "OpenAI is required for OpenAIAdapter. "
-        "Install it with: pip install medha[openai]"
-    )
+    _OPENAI_AVAILABLE = False
+    AsyncOpenAI = None  # type: ignore[assignment,misc]
+    APIConnectionError = Exception  # type: ignore[assignment,misc]
+    AuthenticationError = Exception  # type: ignore[assignment,misc]
+    RateLimitError = Exception  # type: ignore[assignment,misc]
 
 from medha.exceptions import EmbeddingError
 from medha.interfaces.embedder import BaseEmbedder
@@ -41,6 +45,11 @@ class OpenAIAdapter(BaseEmbedder):
         api_key: str | None = None,
         dimensions: int | None = None,
     ):
+        if not _OPENAI_AVAILABLE:
+            raise ImportError(
+                "OpenAI is required for OpenAIAdapter. "
+                "Install it with: pip install medha[openai]"
+            )
         self._model_name = model_name
         self._dimensions = dimensions
         self._client: AsyncOpenAI | None = None
@@ -68,7 +77,10 @@ class OpenAIAdapter(BaseEmbedder):
 
         Uses the async client for non-blocking operation.
         """
-        assert self._client is not None
+        if self._client is None:
+            raise EmbeddingError(
+                "OpenAI client is not initialized. Call _initialize_client() first."
+            )
         try:
             logger.debug("OpenAI aembed: text_len=%d, model='%s'", len(text), self._model_name)
             kwargs = {"input": text, "model": self._model_name}
@@ -104,7 +116,10 @@ class OpenAIAdapter(BaseEmbedder):
         OpenAI's API natively supports batched input.
         Respects rate limits via the client's built-in retry logic.
         """
-        assert self._client is not None
+        if self._client is None:
+            raise EmbeddingError(
+                "OpenAI client is not initialized. Call _initialize_client() first."
+            )
         try:
             logger.debug("OpenAI aembed_batch: %d texts, model='%s'", len(texts), self._model_name)
             kwargs = {"input": texts, "model": self._model_name}

@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,7 +35,17 @@ class Settings(BaseSettings):
     # --- Search thresholds ---
     score_threshold_exact: float = Field(default=0.99, ge=0.0, le=1.0)
     score_threshold_semantic: float = Field(default=0.90, ge=0.0, le=1.0)
-    score_threshold_template: float = Field(default=0.70, ge=0.0, le=1.0)
+    score_threshold_template: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum score for a template match to be returned. "
+            "The maximum achievable score is ~0.88 "
+            "(keyword_bonus=1.0 × 0.5 + param_completeness=1.0 × 0.3 + priority_1 × 0.08). "
+            "Values above 0.88 will never match any template."
+        ),
+    )
     score_threshold_fuzzy: float = Field(default=85.0, ge=0.0, le=100.0, description="Fuzzy match threshold (0-100)")
 
     # --- L1 Cache ---
@@ -76,6 +86,16 @@ class Settings(BaseSettings):
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
+    # --- Timeouts ---
+    embedding_timeout: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Timeout in seconds for embedding calls (aembed and aembed_batch). "
+            "None disables the timeout. Increase for large batches or slow networks."
+        ),
+    )
+
     # --- Validators ---
     @field_validator("score_threshold_exact")
     @classmethod
@@ -86,7 +106,7 @@ class Settings(BaseSettings):
 
     @field_validator("score_threshold_semantic")
     @classmethod
-    def semantic_below_exact(cls, v: float, info) -> float:  # type: ignore[type-arg]
+    def semantic_below_exact(cls, v: float, info: ValidationInfo) -> float:
         exact = info.data.get("score_threshold_exact", 0.99)
         if v >= exact:
             raise ValueError("Semantic threshold must be lower than exact threshold")

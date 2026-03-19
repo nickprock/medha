@@ -1,5 +1,8 @@
 """Core Medha class implementing the waterfall search strategy."""
 
+from __future__ import annotations
+
+import asyncio
 import json
 import logging
 import re
@@ -61,7 +64,7 @@ class Medha:
         templates: List[QueryTemplate] | None = None,
     ):
         self._collection_name = collection_name
-        self._template_collection = f"{collection_name}_templates"
+        self._template_collection = f"__medha_templates_{collection_name}"
         self._embedder = embedder
         self._settings = settings or Settings()
         self._templates = templates or []
@@ -76,10 +79,15 @@ class Medha:
         # L1 in-memory cache (Tier 0)
         self._l1_cache: OrderedDict[str, CacheHit] = OrderedDict()
         self._l1_max_size = self._settings.l1_cache_max_size
+        self._l1_lock = asyncio.Lock()
 
         # Embedding cache (avoids redundant embedding calls)
         self._embedding_cache: OrderedDict[str, List[float]] = OrderedDict()
         self._embedding_cache_max = 10000
+        self._embedding_cache_lock = asyncio.Lock()
+
+        # Deduplication: tracks in-flight embedding computations
+        self._pending_embeddings: Dict[str, asyncio.Future[List[float]]] = {}
 
         # NLP parameter extractor
         self._param_extractor = ParameterExtractor()
@@ -123,6 +131,22 @@ class Medha:
 
         await self._backend.initialize(self._collection_name, dimension)
         await self._backend.initialize(self._template_collection, dimension)
+
+        # Warn once if a legacy-named template collection still exists
+        legacy_collection = f"{self._collection_name}_templates"
+        try:
+            legacy_count = await self._backend.count(legacy_collection)
+            if legacy_count > 0:
+                logger.warning(
+                    "Legacy template collection '%s' found with %d entries. "
+                    "Templates will be re-synced to '%s'. "
+                    "Delete the old collection manually when ready.",
+                    legacy_collection,
+                    legacy_count,
+                    self._template_collection,
+                )
+        except StorageError:
+            pass  # Old collection does not exist — fresh deployment
 
         if self._settings.template_file and not self._templates:
             await self.load_templates_from_file(self._settings.template_file)
@@ -176,7 +200,7 @@ class Medha:
             logger.debug("Search started for: '%s'", question[:80])
 
             # --- Tier 0: L1 Cache ---
-            l1_hit = self._check_l1_cache(question)
+            l1_hit = await self._check_l1_cache(question)
             if l1_hit:
                 self._stats["l1_hits"] += 1
                 logger.debug("Tier 0 L1 cache HIT for: '%s'", question[:50])
@@ -187,7 +211,7 @@ class Medha:
             template_hit = await self._search_templates(question)
             if template_hit:
                 self._stats["template_hits"] += 1
-                self._store_in_l1(question, template_hit)
+                await self._store_in_l1(question, template_hit)
                 logger.debug(
                     "Tier 1 template HIT: template='%s', confidence=%.3f",
                     template_hit.template_used,
@@ -207,7 +231,7 @@ class Medha:
             exact_hit = await self._search_exact(embedding)
             if exact_hit:
                 self._stats["exact_hits"] += 1
-                self._store_in_l1(question, exact_hit)
+                await self._store_in_l1(question, exact_hit)
                 logger.debug(
                     "Tier 2 exact HIT: confidence=%.4f, query='%s'",
                     exact_hit.confidence,
@@ -220,7 +244,7 @@ class Medha:
             semantic_hit = await self._search_semantic(embedding)
             if semantic_hit:
                 self._stats["semantic_hits"] += 1
-                self._store_in_l1(question, semantic_hit)
+                await self._store_in_l1(question, semantic_hit)
                 logger.debug(
                     "Tier 3 semantic HIT: confidence=%.4f, query='%s'",
                     semantic_hit.confidence,
@@ -233,7 +257,7 @@ class Medha:
             fuzzy_hit = await self._search_fuzzy(question)
             if fuzzy_hit:
                 self._stats["fuzzy_hits"] += 1
-                self._store_in_l1(question, fuzzy_hit)
+                await self._store_in_l1(question, fuzzy_hit)
                 logger.debug(
                     "Tier 4 fuzzy HIT: confidence=%.4f", fuzzy_hit.confidence
                 )
@@ -252,30 +276,33 @@ class Medha:
 
     # --- Tier Implementations ---
 
-    def _check_l1_cache(self, question: str) -> Optional[CacheHit]:
+    async def _check_l1_cache(self, question: str) -> Optional[CacheHit]:
         """Check the L1 in-memory LRU cache.
 
         Key: MD5 hash of normalized question.
         Returns: CacheHit if found, None otherwise.
         """
         key = question_hash(question)
-        if key in self._l1_cache:
-            # Move to end (most recently used)
-            hit = self._l1_cache.pop(key)
-            self._l1_cache[key] = hit
-            return hit
+        async with self._l1_lock:
+            if key in self._l1_cache:
+                # Move to end (most recently used)
+                hit = self._l1_cache.pop(key)
+                self._l1_cache[key] = hit
+                # Override strategy to accurately reflect the retrieval tier
+                return hit.model_copy(update={"strategy": SearchStrategy.L1_CACHE})
         return None
 
-    def _store_in_l1(self, question: str, hit: CacheHit) -> None:
+    async def _store_in_l1(self, question: str, hit: CacheHit) -> None:
         """Store a result in the L1 cache with LRU eviction."""
         if self._l1_max_size <= 0:
             return
         key = question_hash(question)
-        evicted = False
-        if len(self._l1_cache) >= self._l1_max_size:
-            self._l1_cache.popitem(last=False)  # Evict oldest
-            evicted = True
-        self._l1_cache[key] = hit
+        async with self._l1_lock:
+            evicted = False
+            if len(self._l1_cache) >= self._l1_max_size:
+                self._l1_cache.popitem(last=False)  # Evict oldest
+                evicted = True
+            self._l1_cache[key] = hit
         logger.debug(
             "L1 cache store: key=%s, strategy=%s, size=%d%s",
             key[:8],
@@ -363,6 +390,16 @@ class Medha:
                     template_used=template.intent,
                 )
 
+        if best_hit is None:
+            logger.debug("Template search: no template could extract all required parameters")
+            return None
+        if best_score < self._settings.score_threshold_template:
+            logger.debug(
+                "Template search: best_score=%.3f below threshold=%.3f",
+                best_score,
+                self._settings.score_threshold_template,
+            )
+            return None
         return best_hit
 
     async def _search_exact(self, embedding: List[float]) -> Optional[CacheHit]:
@@ -431,6 +468,7 @@ class Medha:
         best_match: Optional[CacheResult] = None
         best_score = 0.0
         offset = None
+        _EARLY_EXIT_SCORE = 99.0  # Stop scanning when a near-perfect match is found
 
         while True:
             results, offset = await self._backend.scroll(
@@ -443,9 +481,11 @@ class Medha:
                 if score > best_score and score >= threshold:
                     best_score = score
                     best_match = r
+                    if best_score >= _EARLY_EXIT_SCORE:
+                        break  # Perfect match in this page — stop inner loop
 
-            if offset is None:
-                break
+            if offset is None or best_score >= _EARLY_EXIT_SCORE:
+                break  # No more pages, or already found a near-perfect match
 
         if best_match:
             return CacheHit(
@@ -479,6 +519,13 @@ class Medha:
         Returns:
             True if stored successfully, False otherwise.
         """
+        if not question or not question.strip():
+            logger.warning("Store skipped: question is empty or whitespace-only")
+            return False
+        if not generated_query or not generated_query.strip():
+            logger.warning("Store skipped: generated_query is empty or whitespace-only")
+            return False
+
         try:
             logger.debug("Storing: '%s' -> '%s'", question[:50], generated_query[:50])
             embedding = await self._get_embedding(question)
@@ -501,7 +548,7 @@ class Medha:
             await self._backend.upsert(self._collection_name, [entry])
 
             # Also store in L1
-            self._store_in_l1(
+            await self._store_in_l1(
                 question,
                 CacheHit(
                     generated_query=generated_query,
@@ -522,41 +569,98 @@ class Medha:
     async def store_batch(self, entries: List[Dict]) -> bool:
         """Store multiple question-query pairs efficiently.
 
+        Uses aembed_batch() for a single round-trip to the embedder, then
+        upserts all entries and populates the L1 cache.
+
         Args:
             entries: List of dicts with keys: question, generated_query,
                 response_summary (optional), template_id (optional).
 
         Returns:
-            True if all stored successfully, False otherwise.
+            True if all stored successfully, False if embedding or upsert fails.
         """
+        if not entries:
+            return True
+
+        valid_entries = []
+        for i, item in enumerate(entries):
+            if not item.get("question", "").strip():
+                logger.warning("store_batch: entry %d skipped — empty question", i)
+                continue
+            if not item.get("generated_query", "").strip():
+                logger.warning("store_batch: entry %d skipped — empty generated_query", i)
+                continue
+            valid_entries.append(item)
+
+        if not valid_entries:
+            logger.warning("store_batch: no valid entries to store")
+            return False
+        entries = valid_entries
+
         try:
             logger.debug("Batch store started: %d entries", len(entries))
+
+            questions = [item["question"] for item in entries]
+            normalized_questions = [normalize_question(q) for q in questions]
+
+            # Single batch embedding call — much faster than N sequential calls
+            try:
+                coro = self._embedder.aembed_batch(normalized_questions)
+                if self._settings.embedding_timeout is not None:
+                    coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
+                embeddings = await coro
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Batch store: embedding timed out after %.1fs for %d entries",
+                    self._settings.embedding_timeout,
+                    len(entries),
+                )
+                return False
+            except EmbeddingError as e:
+                logger.error("Batch store: embedding failed: %s", e)
+                return False
+
+            # Populate embedding cache with all computed vectors
+            async with self._embedding_cache_lock:
+                for question, vec in zip(questions, embeddings):
+                    cache_key = question_hash(question)
+                    if len(self._embedding_cache) >= self._embedding_cache_max:
+                        self._embedding_cache.popitem(last=False)
+                    self._embedding_cache[cache_key] = vec
+
+            # Build CacheEntry objects
             cache_entries = []
-            for item in entries:
+            for item, embedding in zip(entries, embeddings):
                 question = item["question"]
-                gen_query = item["generated_query"]
-
-                embedding = await self._get_embedding(question)
-                if embedding is None:
-                    logger.warning("Batch store: skipping entry, embedding failed for '%s'", question[:50])
-                    continue
-
                 normalized = normalize_question(question)
                 entry = CacheEntry(
                     id=str(uuid.uuid4()),
                     vector=embedding,
                     original_question=question,
                     normalized_question=normalized,
-                    generated_query=gen_query,
-                    query_hash=query_hash(gen_query),
+                    generated_query=item["generated_query"],
+                    query_hash=query_hash(item["generated_query"]),
                     response_summary=item.get("response_summary"),
                     template_id=item.get("template_id"),
                 )
                 cache_entries.append(entry)
 
-            if cache_entries:
-                await self._backend.upsert(self._collection_name, cache_entries)
-                logger.info("Batch stored %d entries", len(cache_entries))
+            await self._backend.upsert(self._collection_name, cache_entries)
+
+            # Populate L1 cache — consistent with store()
+            for item in entries:
+                await self._store_in_l1(
+                    item["question"],
+                    CacheHit(
+                        generated_query=item["generated_query"],
+                        response_summary=item.get("response_summary"),
+                        confidence=1.0,
+                        strategy=SearchStrategy.EXACT_MATCH,
+                        template_used=item.get("template_id"),
+                    ),
+                )
+
+            logger.info("Batch stored %d entries", len(cache_entries))
             return True
 
         except Exception as e:
@@ -617,9 +721,12 @@ class Medha:
             pass
 
         entries = []
+        failed_templates = []
         for template in self._templates:
             # Embed the main template_text and each alias
             texts_to_embed = [template.template_text] + template.aliases
+            template_entries = []
+            failed_texts = []
             for text in texts_to_embed:
                 try:
                     # Strip {placeholder} braces so the embedder sees
@@ -627,12 +734,13 @@ class Medha:
                     embed_text = re.sub(r"\{(\w+)\}", r"\1", text)
                     vec = await self._embedder.aembed(normalize_question(embed_text))
                 except EmbeddingError:
+                    failed_texts.append(text)
                     logger.warning(
                         "Failed to embed template text: '%s'", text[:50]
                     )
                     continue
 
-                entry = CacheEntry(
+                template_entries.append(CacheEntry(
                     id=str(uuid.uuid4()),
                     vector=vec,
                     original_question=text,
@@ -640,8 +748,31 @@ class Medha:
                     generated_query=template.query_template,
                     query_hash=query_hash(template.query_template),
                     template_id=template.intent,
+                ))
+
+            if not template_entries:
+                logger.error(
+                    "Template '%s' not synced: all %d text(s) failed to embed",
+                    template.intent,
+                    len(texts_to_embed),
                 )
-                entries.append(entry)
+                failed_templates.append(template.intent)
+            else:
+                if failed_texts:
+                    logger.warning(
+                        "Template '%s': %d of %d text(s) failed to embed — partial sync",
+                        template.intent,
+                        len(failed_texts),
+                        len(texts_to_embed),
+                    )
+                entries.extend(template_entries)
+
+        if failed_templates:
+            logger.warning(
+                "%d template(s) could not be synced: %s",
+                len(failed_templates),
+                ", ".join(failed_templates),
+            )
 
         if entries:
             await self._backend.upsert(self._template_collection, entries)
@@ -652,8 +783,9 @@ class Medha:
     async def _get_embedding(self, question: str) -> Optional[List[float]]:
         """Get or compute the embedding for a question.
 
-        Checks the internal LRU cache first. On miss, calls the embedder
-        and caches the result.
+        Checks the internal LRU cache first. If another coroutine is already
+        computing the same embedding, waits for its result instead of
+        duplicating the work (deduplication via asyncio.Future).
 
         Returns:
             Embedding vector, or None on failure.
@@ -661,25 +793,79 @@ class Medha:
         normalized = normalize_question(question)
         cache_key = question_hash(question)
 
-        # Check cache
-        if cache_key in self._embedding_cache:
-            vec = self._embedding_cache.pop(cache_key)
-            self._embedding_cache[cache_key] = vec  # Move to end
-            logger.debug("Embedding cache HIT for key=%s", cache_key[:8])
-            return vec
+        our_future: Optional[asyncio.Future[List[float]]] = None
+        wait_future: Optional[asyncio.Future[List[float]]] = None
 
-        # Compute
-        logger.debug("Embedding cache MISS for key=%s, computing...", cache_key[:8])
-        try:
-            vec = await self._embedder.aembed(normalized)
-        except EmbeddingError as e:
-            logger.error("Embedding failed for '%s': %s", question[:50], e)
+        async with self._embedding_cache_lock:
+            # Cache hit → LRU bump and return
+            if cache_key in self._embedding_cache:
+                vec = self._embedding_cache.pop(cache_key)
+                self._embedding_cache[cache_key] = vec
+                logger.debug("Embedding cache HIT for key=%s", cache_key[:8])
+                return vec
+
+            # Another coroutine is already computing this key → join it
+            if cache_key in self._pending_embeddings:
+                wait_future = self._pending_embeddings[cache_key]
+                logger.debug("Embedding deduplication: joining in-flight key=%s", cache_key[:8])
+            else:
+                # We are the first → register a Future so others can join
+                our_future = asyncio.get_running_loop().create_future()
+                self._pending_embeddings[cache_key] = our_future
+                logger.debug("Embedding cache MISS for key=%s, computing...", cache_key[:8])
+
+        if wait_future is not None:
+            try:
+                return await asyncio.shield(wait_future)
+            except (EmbeddingError, asyncio.CancelledError, asyncio.TimeoutError):
+                logger.warning("In-flight embedding unavailable for key=%s", cache_key[:8])
+                return None
+
+        # We own this computation
+        if our_future is None:
+            logger.error("Embedding deduplication: invariant violated for key=%s", cache_key[:8])
             return None
 
-        # Store in cache with LRU eviction
-        if len(self._embedding_cache) >= self._embedding_cache_max:
-            self._embedding_cache.popitem(last=False)
-        self._embedding_cache[cache_key] = vec
+        try:
+            coro = self._embedder.aembed(normalized)
+            if self._settings.embedding_timeout is not None:
+                coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
+            vec = await coro
+        except asyncio.TimeoutError:
+            err = EmbeddingError(
+                f"Embedding timed out after {self._settings.embedding_timeout}s"
+            )
+            logger.error("Embedding timed out for '%s'", question[:50])
+            async with self._embedding_cache_lock:
+                self._pending_embeddings.pop(cache_key, None)
+            if not our_future.done():
+                our_future.set_exception(err)
+            return None
+        except EmbeddingError as e:
+            logger.error("Embedding failed for '%s': %s", question[:50], e)
+            async with self._embedding_cache_lock:
+                self._pending_embeddings.pop(cache_key, None)
+            if not our_future.done():
+                our_future.set_exception(e)
+            return None
+        except BaseException:
+            # CancelledError, KeyboardInterrupt, etc. — always unblock waiters
+            async with self._embedding_cache_lock:
+                self._pending_embeddings.pop(cache_key, None)
+            if not our_future.done():
+                our_future.cancel()
+            raise
+
+        # Store in cache and notify waiters
+        async with self._embedding_cache_lock:
+            if len(self._embedding_cache) >= self._embedding_cache_max:
+                self._embedding_cache.popitem(last=False)
+            self._embedding_cache[cache_key] = vec
+            self._pending_embeddings.pop(cache_key, None)
+
+        if not our_future.done():
+            our_future.set_result(vec)
+
         logger.debug(
             "Embedding computed: dim=%d, cache_size=%d",
             len(vec),

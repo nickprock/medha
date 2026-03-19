@@ -1,8 +1,10 @@
 """BaseEmbedder abstract class defining the embedder interface."""
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, Coroutine, List, TypeVar
 import asyncio
+
+_T = TypeVar("_T")
 
 
 class BaseEmbedder(ABC):
@@ -62,14 +64,14 @@ class BaseEmbedder(ABC):
         return self._run_sync(self.aembed_batch(texts))
 
     @staticmethod
-    def _run_sync(coro):
+    def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
         """Run an async coroutine synchronously.
 
         Handles the case where an event loop is already running
         (e.g., inside Jupyter notebooks).
         """
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
         else:
