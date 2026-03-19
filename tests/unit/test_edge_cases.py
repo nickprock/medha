@@ -521,20 +521,14 @@ class TestStoreInputValidation:
 # ---------------------------------------------------------------------------
 
 class TestTemplateSyncPartialFailure:
-    async def test_partial_embed_failure_logs_warning(self, settings, caplog):
-        """If some texts fail to embed, template is partially synced with a warning."""
+    async def test_batch_embed_failure_logs_error(self, settings, caplog):
+        """If aembed_batch() raises, an ERROR is logged and no templates are synced."""
         import logging
         from medha.types import QueryTemplate
 
-        call_count = 0
-
-        class PartialFailEmbedder(MockEmbedder):
-            async def aembed(self, text: str):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 2:  # Fail only the first alias
-                    raise EmbeddingError("intentional alias failure")
-                return await super().aembed(text)
+        class BatchFailEmbedder(MockEmbedder):
+            async def aembed_batch(self, texts):
+                raise EmbeddingError("intentional batch failure")
 
         template = QueryTemplate(
             intent="count_users",
@@ -543,25 +537,28 @@ class TestTemplateSyncPartialFailure:
             parameters=[],
             aliases=["User count please"],
         )
+        backend = MockBackend()
         m = Medha(
-            collection_name="partial_sync_test",
-            embedder=PartialFailEmbedder(dimension=384),
-            backend=MockBackend(),
+            collection_name="batch_fail_sync_test",
+            embedder=BatchFailEmbedder(dimension=384),
+            backend=backend,
             settings=settings,
         )
-        with caplog.at_level(logging.WARNING, logger="medha.core"):
+        with caplog.at_level(logging.ERROR, logger="medha.core"):
             await m.start()
             await m.load_templates([template])
 
-        assert any("partial sync" in r.message for r in caplog.records)
+        assert any("batch embedding failed" in r.message for r in caplog.records)
+        # No entries should have been synced
+        assert await backend.count("__medha_templates_batch_fail_sync_test") == 0
 
     async def test_all_embed_failures_logs_error(self, settings, caplog):
-        """If all texts for a template fail, an ERROR is logged and the template is skipped."""
+        """If aembed_batch() always fails, an ERROR is logged and sync is aborted."""
         import logging
         from medha.types import QueryTemplate
 
         class AlwaysFailEmbedder(MockEmbedder):
-            async def aembed(self, text: str):
+            async def aembed_batch(self, texts):
                 raise EmbeddingError("always fails")
 
         template = QueryTemplate(
@@ -570,14 +567,57 @@ class TestTemplateSyncPartialFailure:
             query_template="SELECT COUNT(*) FROM users",
             parameters=[],
         )
+        backend = MockBackend()
         m = Medha(
             collection_name="all_fail_sync_test",
             embedder=AlwaysFailEmbedder(dimension=384),
-            backend=MockBackend(),
+            backend=backend,
             settings=settings,
         )
         with caplog.at_level(logging.ERROR, logger="medha.core"):
             await m.start()
             await m.load_templates([template])
 
-        assert any("not synced" in r.message for r in caplog.records)
+        assert any("batch embedding failed" in r.message for r in caplog.records)
+        assert await backend.count("__medha_templates_all_fail_sync_test") == 0
+
+    async def test_batch_sync_uses_single_aembed_batch_call(self, settings):
+        """_sync_templates_to_backend must call aembed_batch() exactly once."""
+        from medha.types import QueryTemplate
+
+        call_count = 0
+        all_texts_received = []
+
+        class CountingEmbedder(MockEmbedder):
+            async def aembed_batch(self, texts):
+                nonlocal call_count
+                call_count += 1
+                all_texts_received.extend(texts)
+                return await super().aembed_batch(texts)
+
+        templates = [
+            QueryTemplate(
+                intent="t1",
+                template_text="How many users",
+                query_template="SELECT COUNT(*) FROM users",
+                aliases=["User count"],
+            ),
+            QueryTemplate(
+                intent="t2",
+                template_text="List products",
+                query_template="SELECT * FROM products",
+                aliases=["Show products", "All products"],
+            ),
+        ]
+        m = Medha(
+            collection_name="batch_count_test",
+            embedder=CountingEmbedder(dimension=384),
+            backend=MockBackend(),
+            settings=settings,
+        )
+        await m.start()
+        await m.load_templates(templates)
+
+        # All 5 texts (2 template_texts + 3 aliases) in a single batch call
+        assert call_count == 1
+        assert len(all_texts_received) == 5

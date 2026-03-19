@@ -254,7 +254,7 @@ class Medha:
             logger.debug("Tier 3 semantic MISS (threshold=%.2f)", self._settings.score_threshold_semantic)
 
             # --- Tier 4: Fuzzy Matching ---
-            fuzzy_hit = await self._search_fuzzy(question)
+            fuzzy_hit = await self._search_fuzzy(question, embedding)
             if fuzzy_hit:
                 self._stats["fuzzy_hits"] += 1
                 await self._store_in_l1(question, fuzzy_hit)
@@ -448,11 +448,17 @@ class Medha:
             )
         return None
 
-    async def _search_fuzzy(self, question: str) -> Optional[CacheHit]:
+    async def _search_fuzzy(
+        self, question: str, embedding: Optional[List[float]] = None
+    ) -> Optional[CacheHit]:
         """Search using Levenshtein distance (optional, requires rapidfuzz).
 
-        Scrolls through all entries in the main collection and compares
-        normalized questions. Computationally expensive for large collections.
+        When an embedding is provided, a vector pre-filter is applied first:
+        only the top-K most similar candidates (by cosine similarity) are
+        considered for fuzzy scoring.  This reduces complexity from O(n) to
+        O(top_k) for large collections while preserving recall.
+
+        Falls back to a full collection scroll when no embedding is available.
 
         Only activated if rapidfuzz is installed.
         """
@@ -467,25 +473,49 @@ class Medha:
 
         best_match: Optional[CacheResult] = None
         best_score = 0.0
-        offset = None
-        _EARLY_EXIT_SCORE = 99.0  # Stop scanning when a near-perfect match is found
+        _EARLY_EXIT_SCORE = 99.0
 
-        while True:
-            results, offset = await self._backend.scroll(
+        if embedding is not None:
+            # Fast path: vector pre-filter → fuzzy only on top-K candidates
+            candidates = await self._backend.search(
                 collection_name=self._collection_name,
-                limit=500,
-                offset=offset,
+                vector=embedding,
+                limit=self._settings.fuzzy_prefilter_top_k,
+                score_threshold=self._settings.score_threshold_fuzzy_prefilter,
             )
-            for r in results:
+            logger.debug(
+                "Fuzzy pre-filter: %d candidates (vector threshold=%.2f, top_k=%d)",
+                len(candidates),
+                self._settings.score_threshold_fuzzy_prefilter,
+                self._settings.fuzzy_prefilter_top_k,
+            )
+            for r in candidates:
                 score = fuzz.ratio(normalized, r.normalized_question)
                 if score > best_score and score >= threshold:
                     best_score = score
                     best_match = r
                     if best_score >= _EARLY_EXIT_SCORE:
-                        break  # Perfect match in this page — stop inner loop
+                        break
+        else:
+            # Slow path: full collection scroll (no embedding available)
+            logger.debug("Fuzzy search: no embedding, falling back to full scroll")
+            offset = None
+            while True:
+                results, offset = await self._backend.scroll(
+                    collection_name=self._collection_name,
+                    limit=500,
+                    offset=offset,
+                )
+                for r in results:
+                    score = fuzz.ratio(normalized, r.normalized_question)
+                    if score > best_score and score >= threshold:
+                        best_score = score
+                        best_match = r
+                        if best_score >= _EARLY_EXIT_SCORE:
+                            break
 
-            if offset is None or best_score >= _EARLY_EXIT_SCORE:
-                break  # No more pages, or already found a near-perfect match
+                if offset is None or best_score >= _EARLY_EXIT_SCORE:
+                    break
 
         if best_match:
             return CacheHit(
@@ -720,63 +750,52 @@ class Medha:
         except StorageError:
             pass
 
-        entries = []
-        failed_templates = []
+        # Flatten all texts across templates into a single list for batch embedding.
+        # Each item: (template, original_text, normalized_embed_text)
+        # Strip {placeholder} braces so the embedder sees natural words.
+        items: List[tuple] = []
         for template in self._templates:
-            # Embed the main template_text and each alias
-            texts_to_embed = [template.template_text] + template.aliases
-            template_entries = []
-            failed_texts = []
-            for text in texts_to_embed:
-                try:
-                    # Strip {placeholder} braces so the embedder sees
-                    # natural words (e.g. "department") instead of noise.
-                    embed_text = re.sub(r"\{(\w+)\}", r"\1", text)
-                    vec = await self._embedder.aembed(normalize_question(embed_text))
-                except EmbeddingError:
-                    failed_texts.append(text)
-                    logger.warning(
-                        "Failed to embed template text: '%s'", text[:50]
-                    )
-                    continue
+            for text in [template.template_text] + template.aliases:
+                embed_text = re.sub(r"\{(\w+)\}", r"\1", text)
+                items.append((template, text, normalize_question(embed_text)))
 
-                template_entries.append(CacheEntry(
-                    id=str(uuid.uuid4()),
-                    vector=vec,
-                    original_question=text,
-                    normalized_question=normalize_question(text),
-                    generated_query=template.query_template,
-                    query_hash=query_hash(template.query_template),
-                    template_id=template.intent,
-                ))
+        if not items:
+            return
 
-            if not template_entries:
-                logger.error(
-                    "Template '%s' not synced: all %d text(s) failed to embed",
-                    template.intent,
-                    len(texts_to_embed),
-                )
-                failed_templates.append(template.intent)
-            else:
-                if failed_texts:
-                    logger.warning(
-                        "Template '%s': %d of %d text(s) failed to embed — partial sync",
-                        template.intent,
-                        len(failed_texts),
-                        len(texts_to_embed),
-                    )
-                entries.extend(template_entries)
-
-        if failed_templates:
-            logger.warning(
-                "%d template(s) could not be synced: %s",
-                len(failed_templates),
-                ", ".join(failed_templates),
+        # Single batch embedding call instead of N sequential aembed() calls
+        try:
+            coro = self._embedder.aembed_batch(
+                [embed_text for _, _, embed_text in items]
             )
+            if self._settings.embedding_timeout is not None:
+                coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
+            vectors = await coro
+        except asyncio.TimeoutError:
+            logger.error(
+                "Template sync: batch embedding timed out after %.1fs for %d texts",
+                self._settings.embedding_timeout,
+                len(items),
+            )
+            return
+        except EmbeddingError as e:
+            logger.error("Template sync: batch embedding failed: %s", e)
+            return
 
-        if entries:
-            await self._backend.upsert(self._template_collection, entries)
-            logger.info("Synced %d template entries to backend", len(entries))
+        entries = [
+            CacheEntry(
+                id=str(uuid.uuid4()),
+                vector=vec,
+                original_question=original_text,
+                normalized_question=normalize_question(original_text),
+                generated_query=template.query_template,
+                query_hash=query_hash(template.query_template),
+                template_id=template.intent,
+            )
+            for (template, original_text, _), vec in zip(items, vectors)
+        ]
+
+        await self._backend.upsert(self._template_collection, entries)
+        logger.info("Synced %d template entries to backend", len(entries))
 
     # --- Embedding Cache ---
 

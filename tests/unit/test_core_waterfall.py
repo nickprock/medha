@@ -325,6 +325,102 @@ class TestFuzzyFallback:
         )
 
 
+class TestFuzzyPrefilter:
+    """Tests for the vector pre-filter optimisation in Tier 4 fuzzy search."""
+
+    async def test_prefilter_uses_embedding_not_scroll(self, mock_backend, waterfall_settings):
+        """_search_fuzzy with an embedding must call backend.search(), not scroll()."""
+        await mock_backend.initialize("prefilter_test", 384)
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="prefilter_test",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        await m.start()
+        await m.store("How many users?", "SELECT COUNT(*) FROM users")
+        m._l1_cache.clear()
+        m._embedding_cache.clear()
+
+        scroll_calls = []
+        original_scroll = mock_backend.scroll
+        async def tracking_scroll(*args, **kwargs):
+            scroll_calls.append((args, kwargs))
+            return await original_scroll(*args, **kwargs)
+        mock_backend.scroll = tracking_scroll
+
+        embedding = await embedder.aembed("How meny usrs?")
+        await m._search_fuzzy("How meny usrs?", embedding)
+
+        # With embedding provided, scroll must NOT be called
+        assert len(scroll_calls) == 0
+
+    async def test_prefilter_fallback_to_scroll_without_embedding(
+        self, mock_backend, waterfall_settings
+    ):
+        """_search_fuzzy without embedding must fall back to scroll()."""
+        pytest.importorskip("rapidfuzz")
+        await mock_backend.initialize("scroll_fallback_test", 384)
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="scroll_fallback_test",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=waterfall_settings,
+        )
+        await m.start()
+        await m.store("How many users?", "SELECT COUNT(*) FROM users")
+
+        scroll_calls = []
+        original_scroll = mock_backend.scroll
+        async def tracking_scroll(*args, **kwargs):
+            scroll_calls.append((args, kwargs))
+            return await original_scroll(*args, **kwargs)
+        mock_backend.scroll = tracking_scroll
+
+        await m._search_fuzzy("How meny usrs?", embedding=None)
+
+        # Without embedding, scroll must be used
+        assert len(scroll_calls) >= 1
+
+    async def test_prefilter_top_k_limits_candidates(self, mock_backend):
+        """fuzzy_prefilter_top_k must bound the number of candidates searched."""
+        pytest.importorskip("rapidfuzz")
+        settings = Settings(
+            qdrant_mode="memory",
+            score_threshold_exact=0.99,
+            score_threshold_semantic=0.85,
+            score_threshold_fuzzy=80.0,
+            score_threshold_fuzzy_prefilter=0.0,  # Accept all vectors
+            fuzzy_prefilter_top_k=2,
+        )
+        embedder = MockEmbedder(dimension=384)
+        m = Medha(
+            collection_name="topk_test",
+            embedder=embedder,
+            backend=mock_backend,
+            settings=settings,
+        )
+        await m.start()
+        # Store 5 entries
+        for i in range(5):
+            await m.store(f"question number {i}", f"SELECT {i}")
+
+        search_calls = []
+        original_search = mock_backend.search
+        async def tracking_search(*args, **kwargs):
+            search_calls.append(kwargs.get("limit", args[2] if len(args) > 2 else None))
+            return await original_search(*args, **kwargs)
+        mock_backend.search = tracking_search
+
+        embedding = await embedder.aembed("question number 0")
+        await m._search_fuzzy("question number 0", embedding)
+
+        # At least one search call must have used limit=2 (top_k)
+        assert any(limit == 2 for limit in search_calls)
+
+
 class TestBatchStore:
     async def test_store_batch(self, medha_instance):
         await medha_instance.start()

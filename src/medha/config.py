@@ -47,6 +47,26 @@ class Settings(BaseSettings):
         ),
     )
     score_threshold_fuzzy: float = Field(default=85.0, ge=0.0, le=100.0, description="Fuzzy match threshold (0-100)")
+    score_threshold_fuzzy_prefilter: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine similarity for the vector pre-filter used in fuzzy search. "
+            "Candidates below this threshold are excluded before Levenshtein scoring, "
+            "reducing fuzzy search from O(n) to O(top_k). Lower values increase recall "
+            "at the cost of more fuzzy comparisons."
+        ),
+    )
+    fuzzy_prefilter_top_k: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description=(
+            "Maximum number of vector-similar candidates to retrieve for fuzzy pre-filtering. "
+            "Fuzzy scoring is applied only to these candidates instead of the full collection."
+        ),
+    )
 
     # --- L1 Cache ---
     l1_cache_max_size: int = Field(default=1000, ge=0, description="Max entries in L1 in-memory cache (0=disabled)")

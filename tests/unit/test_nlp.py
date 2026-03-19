@@ -145,3 +145,58 @@ class TestExtractionFailure:
         )
         with pytest.raises(ParameterExtractionError):
             extractor.extract("nothing matches here", template)
+
+
+class TestEntityCache:
+    def test_same_text_returns_cached_result(self, extractor):
+        """extract_entities() on the same text must not re-parse."""
+        call_count = 0
+        original_findall = __import__("re").findall
+
+        import re
+
+        def counting_findall(pattern, string, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original_findall(pattern, string, *args, **kwargs)
+
+        import medha.utils.nlp as nlp_module
+        original = nlp_module.re.findall
+        nlp_module.re.findall = counting_findall
+
+        try:
+            extractor.extract_entities("find 5 users")
+            calls_after_first = call_count
+            call_count = 0
+            extractor.extract_entities("find 5 users")  # should hit cache
+            assert call_count == 0, "Cache miss: re.findall was called on repeated input"
+        finally:
+            nlp_module.re.findall = original
+
+    def test_different_texts_are_cached_separately(self, extractor):
+        r1 = extractor.extract_entities("show 5 records")
+        r2 = extractor.extract_entities("show 10 records")
+        assert r1 != r2
+        assert "5" in r1.get("number", [])
+        assert "10" in r2.get("number", [])
+
+    def test_cache_is_populated_after_first_call(self, extractor):
+        extractor._entity_cache.clear()
+        extractor.extract_entities("unique question 42")
+        assert "unique question 42" in extractor._entity_cache
+
+    def test_cache_evicts_when_full(self, extractor):
+        extractor._entity_cache.clear()
+        # Fill cache to max
+        for i in range(ParameterExtractor._ENTITY_CACHE_MAXSIZE):
+            extractor.extract_entities(f"question number {i}")
+        assert len(extractor._entity_cache) == ParameterExtractor._ENTITY_CACHE_MAXSIZE
+        # One more entry triggers eviction (clear-on-full)
+        extractor.extract_entities("overflow question")
+        assert len(extractor._entity_cache) == 1
+
+    def test_cache_hit_returns_same_object(self, extractor):
+        extractor._entity_cache.clear()
+        result1 = extractor.extract_entities("stable text 99")
+        result2 = extractor.extract_entities("stable text 99")
+        assert result1 == result2

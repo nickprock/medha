@@ -19,6 +19,8 @@ _STOP_WORDS = frozenset({
 class ParameterExtractor:
     """Extract parameters from user questions using a cascading strategy."""
 
+    _ENTITY_CACHE_MAXSIZE = 256
+
     def __init__(self, use_spacy: bool = True):
         """Initialize the extractor.
 
@@ -28,6 +30,9 @@ class ParameterExtractor:
         """
         self._nlp = None
         self._spacy_available = False
+        # Cache entity extraction results: same question is parsed once
+        # even when matched against many templates in the same search call.
+        self._entity_cache: Dict[str, Dict[str, List[str]]] = {}
 
         if use_spacy:
             self._try_load_spacy()
@@ -113,6 +118,9 @@ class ParameterExtractor:
     def extract_entities(self, text: str) -> Dict[str, List[str]]:
         """Extract named entities using spaCy + regex fallback.
 
+        Results are cached per text: the same question is parsed only once
+        even when matched against multiple templates in the same search call.
+
         Returns a dict mapping entity type to list of values:
             - "number": ["5", "100"]
             - "person": ["John Smith"]
@@ -122,6 +130,10 @@ class ParameterExtractor:
         Always includes regex-extracted numbers and capitalized words,
         even when spaCy is available (union of both).
         """
+        if text in self._entity_cache:
+            logger.debug("Entity cache HIT for text len=%d", len(text))
+            return self._entity_cache[text]
+
         entities: Dict[str, List[str]] = defaultdict(list)
 
         if self._spacy_available and self._nlp is not None:
@@ -139,7 +151,14 @@ class ParameterExtractor:
         if names:
             entities["person"].extend(names)
 
-        return dict(entities)
+        result = dict(entities)
+
+        # Evict all when full: simple and correct for a pure-function cache
+        if len(self._entity_cache) >= self._ENTITY_CACHE_MAXSIZE:
+            self._entity_cache.clear()
+        self._entity_cache[text] = result
+
+        return result
 
     def render_query(
         self, template: QueryTemplate, parameters: Dict[str, str]
