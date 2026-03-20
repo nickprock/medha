@@ -43,8 +43,11 @@ gliner = ["gliner>=0.2,<1"]
 # Fuzzy matching
 fuzzy = ["rapidfuzz>=3.0,<4"]
 
+# Distributed L1 cache
+redis = ["redis[asyncio]>=5.0,<6"]
+
 # All optional providers
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis]"]
 
 # Development
 dev = [
