@@ -71,8 +71,12 @@ pip install "medha-archai[openai]"
 # Fuzzy matching (Tier 4 - Levenshtein distance)
 pip install "medha-archai[fuzzy]"
 
-# spaCy NLP for advanced parameter extraction
+# spaCy NLP for parameter extraction (pre-trained, fixed entity types, ~15 MB model)
 pip install "medha-archai[nlp]"
+python -m spacy download en_core_web_sm
+
+# GLiNER NLP for zero-shot parameter extraction (uses param names as labels, ~500 MB model)
+pip install "medha-archai[gliner]"
 
 # Everything
 pip install "medha-archai[all]"
@@ -519,6 +523,78 @@ async with Medha(
 
 ---
 
+## Parameter Extraction (NER)
+
+Template matching requires extracting parameter values (e.g. `{department}`, `{person}`) from the user's question. `ParameterExtractor` applies a cascading strategy:
+
+1. **Regex** — patterns defined in `template.parameter_patterns` (fastest, most precise)
+2. **GLiNER** — zero-shot NER, uses `template.parameters` directly as entity labels
+3. **spaCy** — pre-trained NER with a fixed label set mapped to parameter names
+4. **Heuristics** — numbers and capitalized words as last resort
+
+### spaCy (pre-trained, fixed labels)
+
+spaCy recognizes standard entity types (`PERSON`, `ORG`, `CARDINAL`) and maps them to parameter names.
+
+```python
+from medha.utils.nlp import ParameterExtractor
+
+ext = ParameterExtractor(use_spacy=True)
+print(ext.spacy_available)  # True if en_core_web_sm is installed
+```
+
+### GLiNER (zero-shot, arbitrary labels)
+
+GLiNER receives `template.parameters` directly as entity labels — no mapping table needed.
+It excels with domain-specific entities that spaCy cannot recognize without custom training.
+
+```python
+from medha.utils.nlp import ParameterExtractor
+
+# Default model: urchade/gliner_medium-v2.1
+ext = ParameterExtractor(use_gliner=True)
+
+# Lighter variant (~250 MB)
+ext = ParameterExtractor(use_gliner=True, gliner_model="urchade/gliner_small-v2.1")
+
+print(ext.gliner_available)  # True if gliner package is installed
+```
+
+### Both enabled (recommended for mixed template sets)
+
+```python
+from medha.utils.nlp import ParameterExtractor
+from medha.types import QueryTemplate
+
+ext = ParameterExtractor(use_spacy=True, use_gliner=True)
+
+template = QueryTemplate(
+    intent="org_project_issues",
+    template_text="Show open issues for {org} on project {project}",
+    query_template="SELECT * FROM issues WHERE org='{org}' AND project='{project}' AND status='open'",
+    parameters=["org", "project"],
+    # No regex needed — GLiNER resolves both from the param names directly
+)
+
+params = ext.extract("Show open issues for Acme Corp on project Apollo", template)
+# {"org": "Acme Corp", "project": "Apollo"}
+
+query = ext.render_query(template, params)
+# SELECT * FROM issues WHERE org='Acme Corp' AND project='Apollo' AND status='open'
+```
+
+| Scenario | Recommended backend |
+|---|---|
+| Numeric or enum parameters | Regex only (`use_spacy=False, use_gliner=False`) |
+| Standard entities (person, org, number) | spaCy (`use_spacy=True`) |
+| Domain-specific or unpredictable param names | GLiNER (`use_gliner=True`) |
+| Mixed templates in the same app | Both enabled — cascade handles it |
+| Edge / resource-constrained deployment | Regex + heuristics only |
+
+Both backends fall back gracefully if the package is not installed.
+
+---
+
 ## Batch Operations
 
 Efficiently store many question-query pairs at once.
@@ -928,6 +1004,7 @@ asyncio.run(main())
 | `OpenAIAdapter` | OpenAI embedding API adapter |
 | `QdrantBackend` | Qdrant vector storage (memory / docker / cloud) |
 | `setup_logging()` | Configure the `medha` logger |
+| `ParameterExtractor` | NER-based parameter extractor (regex → GLiNER → spaCy → heuristics) |
 
 ---
 

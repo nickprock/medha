@@ -20,35 +20,57 @@ class ParameterExtractor:
     """Extract parameters from user questions using a cascading strategy."""
 
     _ENTITY_CACHE_MAXSIZE = 256
+    _GLINER_DEFAULT_MODEL = "urchade/gliner_medium-v2.1"
 
-    def __init__(self, use_spacy: bool = True):
+    def __init__(
+        self,
+        use_spacy: bool = True,
+        use_gliner: bool = False,
+        gliner_model: str = _GLINER_DEFAULT_MODEL,
+    ):
         """Initialize the extractor.
 
         Args:
             use_spacy: If True, attempt to load a spaCy model for NER.
                 Falls back gracefully if spaCy is not installed.
+            use_gliner: If True, attempt to load a GLiNER model for zero-shot NER.
+                GLiNER uses template parameter names directly as entity labels,
+                removing the need for hardcoded label mappings.
+                Falls back gracefully if gliner is not installed.
+            gliner_model: HuggingFace model ID for GLiNER. Defaults to
+                ``urchade/gliner_medium-v2.1``.
         """
         self._nlp = None
         self._spacy_available = False
+        self._gliner = None
+        self._gliner_available = False
         # Cache entity extraction results: same question is parsed once
         # even when matched against many templates in the same search call.
         self._entity_cache: Dict[str, Dict[str, List[str]]] = {}
 
         if use_spacy:
             self._try_load_spacy()
+        if use_gliner:
+            self._try_load_gliner(gliner_model)
 
     @property
     def spacy_available(self) -> bool:
         """Whether spaCy NER is available."""
         return self._spacy_available
 
+    @property
+    def gliner_available(self) -> bool:
+        """Whether GLiNER zero-shot NER is available."""
+        return self._gliner_available
+
     def extract(self, question: str, template: QueryTemplate) -> Dict[str, str]:
         """Extract all parameters for a template from a question.
 
         Cascading strategy:
             1. Regex patterns from template.parameter_patterns
-            2. spaCy NER (if available)
-            3. Fallback heuristics (numbers, capitalized words)
+            2. GLiNER zero-shot NER (if enabled) — uses param names as labels
+            3. spaCy NER (if enabled)
+            4. Fallback heuristics (numbers, capitalized words)
 
         Args:
             question: The raw user question.
@@ -80,7 +102,19 @@ class ParameterExtractor:
             logger.debug("All params resolved via regex")
             return params
 
-        # 2. spaCy NER
+        # 2. GLiNER zero-shot NER (uses template param names as labels directly)
+        if self._gliner_available:
+            gliner_params = self._extract_via_gliner(question, template)
+            if gliner_params:
+                logger.debug("GLiNER extracted: %s", gliner_params)
+            for key, value in gliner_params.items():
+                if key not in params:
+                    params[key] = value
+            if len(params) == len(template.parameters):
+                logger.debug("All params resolved via regex+GLiNER")
+                return params
+
+        # 3. spaCy NER
         if self._spacy_available:
             spacy_params = self._extract_via_spacy(question, template)
             if spacy_params:
@@ -92,7 +126,7 @@ class ParameterExtractor:
                 logger.debug("All params resolved via regex+spaCy")
                 return params
 
-        # 3. Heuristic fallback
+        # 4. Heuristic fallback
         heuristic_params = self._extract_via_heuristics(question, template)
         if heuristic_params:
             logger.debug("Heuristic extracted: %s", heuristic_params)
@@ -106,10 +140,12 @@ class ParameterExtractor:
 
         missing = set(template.parameters) - set(params)
         logger.warning(
-            "Incomplete extraction for template '%s': missing=%s, got=%s",
+            "Incomplete extraction for template '%s': missing=%s, got=%s, cascade=%s",
             template.intent,
             missing,
             params,
+            f"regex={'ok' if params else 'miss'} gliner={'ok' if self._gliner_available else 'off'} "
+            f"spacy={'ok' if self._spacy_available else 'off'}",
         )
         raise ParameterExtractionError(
             f"Could not extract parameters {missing} from: {question!r}"
@@ -219,6 +255,45 @@ class ParameterExtractor:
             except (OSError, ImportError):
                 continue
         logger.info("spaCy not available; using regex-only extraction")
+
+    def _try_load_gliner(self, model_name: str) -> None:
+        """Attempt to load a GLiNER model from HuggingFace."""
+        try:
+            from gliner import GLiNER
+
+            self._gliner = GLiNER.from_pretrained(model_name)
+            self._gliner_available = True
+            logger.info("Loaded GLiNER model: %s", model_name)
+        except ImportError:
+            logger.info("gliner package not installed; run: pip install gliner")
+        except Exception as exc:
+            logger.info("GLiNER model load failed (%s); skipping", exc)
+
+    def _extract_via_gliner(
+        self, question: str, template: QueryTemplate
+    ) -> Dict[str, str]:
+        """Extract parameters using GLiNER zero-shot NER.
+
+        Uses ``template.parameters`` directly as entity labels, so no hardcoded
+        label mapping is needed. GLiNER returns the best span for each label.
+        """
+        if not template.parameters or self._gliner is None:
+            return {}
+
+        labels = list(template.parameters)
+        try:
+            entities = self._gliner.predict_entities(question, labels)
+        except Exception as exc:
+            logger.warning("GLiNER prediction failed: %s", exc)
+            return {}
+
+        params: Dict[str, str] = {}
+        for entity in entities:
+            label: str = entity["label"]
+            if label in template.parameters and label not in params:
+                params[label] = entity["text"]
+
+        return params
 
     def _extract_via_regex(
         self, question: str, template: QueryTemplate
