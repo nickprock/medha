@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     # --- Template loading ---
     template_file: Optional[str] = Field(default=None, description="Path to JSON template file")
 
+    # --- Persistent embedding cache ---
+    embedding_cache_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a JSON file used to persist the embedding cache across restarts. "
+            "When set, embeddings are loaded from disk on start() and saved to disk on close(). "
+            "Speeds up warm-start scenarios where the same questions recur across sessions."
+        ),
+    )
+
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
