@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional
@@ -13,6 +14,7 @@ from typing import Dict, List, Optional
 from medha.config import Settings
 from medha.types import CacheHit, CacheEntry, CacheResult, QueryTemplate, SearchStrategy
 from medha.interfaces.embedder import BaseEmbedder
+from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
 from medha.utils.normalization import normalize_question, question_hash, query_hash
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
@@ -62,6 +64,7 @@ class Medha:
         backend: VectorStorageBackend | None = None,
         settings: Settings | None = None,
         templates: List[QueryTemplate] | None = None,
+        l1_backend: L1CacheBackend | None = None,
     ):
         self._collection_name = collection_name
         self._template_collection = f"__medha_templates_{collection_name}"
@@ -76,10 +79,12 @@ class Medha:
         else:
             self._backend = backend
 
-        # L1 in-memory cache (Tier 0)
-        self._l1_cache: OrderedDict[str, CacheHit] = OrderedDict()
-        self._l1_max_size = self._settings.l1_cache_max_size
-        self._l1_lock = asyncio.Lock()
+        # L1 cache (Tier 0) — pluggable: in-memory (default) or Redis
+        if l1_backend is not None:
+            self._l1_backend = l1_backend
+        else:
+            from medha.l1_cache.memory import InMemoryL1Cache
+            self._l1_backend = InMemoryL1Cache(max_size=self._settings.l1_cache_max_size)
 
         # Embedding cache (avoids redundant embedding calls)
         self._embedding_cache: OrderedDict[str, List[float]] = OrderedDict()
@@ -102,6 +107,15 @@ class Medha:
             "misses": 0,
             "errors": 0,
         }
+        self._tier_latencies: Dict[str, Dict[str, float]] = {
+            "l1_cache":  {"total_ms": 0.0, "calls": 0},
+            "template":  {"total_ms": 0.0, "calls": 0},
+            "exact":     {"total_ms": 0.0, "calls": 0},
+            "semantic":  {"total_ms": 0.0, "calls": 0},
+            "fuzzy":     {"total_ms": 0.0, "calls": 0},
+        }
+        self._total_stored = 0
+        self._warm_loaded = 0
 
     # --- Lifecycle ---
 
@@ -154,6 +168,10 @@ class Medha:
         if self._templates:
             await self._sync_templates_to_backend()
 
+        # Load persistent embedding cache from disk (if configured)
+        if self._settings.embedding_cache_path:
+            self._load_embedding_cache_from_disk()
+
         logger.info(
             "Medha started: collection='%s', templates=%d",
             self._collection_name,
@@ -162,6 +180,10 @@ class Medha:
 
     async def close(self) -> None:
         """Shut down the backend and release resources."""
+        if self._settings.embedding_cache_path:
+            self._save_embedding_cache_to_disk()
+        if hasattr(self._l1_backend, "close"):
+            await self._l1_backend.close()  # type: ignore[attr-defined]
         await self._backend.close()
         logger.info("Medha closed")
 
@@ -200,7 +222,10 @@ class Medha:
             logger.debug("Search started for: '%s'", question[:80])
 
             # --- Tier 0: L1 Cache ---
+            _t = time.perf_counter()
             l1_hit = await self._check_l1_cache(question)
+            self._tier_latencies["l1_cache"]["total_ms"] += (time.perf_counter() - _t) * 1000
+            self._tier_latencies["l1_cache"]["calls"] += 1
             if l1_hit:
                 self._stats["l1_hits"] += 1
                 logger.debug("Tier 0 L1 cache HIT for: '%s'", question[:50])
@@ -208,7 +233,10 @@ class Medha:
             logger.debug("Tier 0 L1 cache MISS")
 
             # --- Tier 1: Template Matching ---
+            _t = time.perf_counter()
             template_hit = await self._search_templates(question)
+            self._tier_latencies["template"]["total_ms"] += (time.perf_counter() - _t) * 1000
+            self._tier_latencies["template"]["calls"] += 1
             if template_hit:
                 self._stats["template_hits"] += 1
                 await self._store_in_l1(question, template_hit)
@@ -227,8 +255,22 @@ class Medha:
                 logger.error("Embedding failed, aborting search for: '%s'", question[:50])
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
-            # --- Tier 2: Exact Vector Match ---
-            exact_hit = await self._search_exact(embedding)
+            # --- Tier 2 + 3: Exact and Semantic in parallel ---
+            # Both tiers query the same vector backend with different thresholds.
+            # Running them concurrently reduces wall-clock latency from
+            # ~(t_exact + t_semantic) to ~max(t_exact, t_semantic).
+            _t = time.perf_counter()
+            exact_hit, semantic_hit = await asyncio.gather(
+                self._search_exact(embedding),
+                self._search_semantic(embedding),
+            )
+            _elapsed_ms = (time.perf_counter() - _t) * 1000
+            # Both tiers share the same wall-clock window; record individually.
+            self._tier_latencies["exact"]["total_ms"] += _elapsed_ms
+            self._tier_latencies["exact"]["calls"] += 1
+            self._tier_latencies["semantic"]["total_ms"] += _elapsed_ms
+            self._tier_latencies["semantic"]["calls"] += 1
+
             if exact_hit:
                 self._stats["exact_hits"] += 1
                 await self._store_in_l1(question, exact_hit)
@@ -240,8 +282,6 @@ class Medha:
                 return exact_hit
             logger.debug("Tier 2 exact MISS (threshold=%.2f)", self._settings.score_threshold_exact)
 
-            # --- Tier 3: Semantic Similarity ---
-            semantic_hit = await self._search_semantic(embedding)
             if semantic_hit:
                 self._stats["semantic_hits"] += 1
                 await self._store_in_l1(question, semantic_hit)
@@ -254,7 +294,10 @@ class Medha:
             logger.debug("Tier 3 semantic MISS (threshold=%.2f)", self._settings.score_threshold_semantic)
 
             # --- Tier 4: Fuzzy Matching ---
+            _t = time.perf_counter()
             fuzzy_hit = await self._search_fuzzy(question, embedding)
+            self._tier_latencies["fuzzy"]["total_ms"] += (time.perf_counter() - _t) * 1000
+            self._tier_latencies["fuzzy"]["calls"] += 1
             if fuzzy_hit:
                 self._stats["fuzzy_hits"] += 1
                 await self._store_in_l1(question, fuzzy_hit)
@@ -277,38 +320,25 @@ class Medha:
     # --- Tier Implementations ---
 
     async def _check_l1_cache(self, question: str) -> Optional[CacheHit]:
-        """Check the L1 in-memory LRU cache.
+        """Check the L1 cache (pluggable backend).
 
         Key: MD5 hash of normalized question.
-        Returns: CacheHit if found, None otherwise.
+        Returns: CacheHit with strategy=L1_CACHE if found, None otherwise.
         """
         key = question_hash(question)
-        async with self._l1_lock:
-            if key in self._l1_cache:
-                # Move to end (most recently used)
-                hit = self._l1_cache.pop(key)
-                self._l1_cache[key] = hit
-                # Override strategy to accurately reflect the retrieval tier
-                return hit.model_copy(update={"strategy": SearchStrategy.L1_CACHE})
+        hit = await self._l1_backend.get(key)
+        if hit is not None:
+            return hit.model_copy(update={"strategy": SearchStrategy.L1_CACHE})
         return None
 
     async def _store_in_l1(self, question: str, hit: CacheHit) -> None:
-        """Store a result in the L1 cache with LRU eviction."""
-        if self._l1_max_size <= 0:
-            return
+        """Store a result in the L1 cache."""
         key = question_hash(question)
-        async with self._l1_lock:
-            evicted = False
-            if len(self._l1_cache) >= self._l1_max_size:
-                self._l1_cache.popitem(last=False)  # Evict oldest
-                evicted = True
-            self._l1_cache[key] = hit
+        await self._l1_backend.set(key, hit)
         logger.debug(
-            "L1 cache store: key=%s, strategy=%s, size=%d%s",
+            "L1 cache store: key=%s, strategy=%s",
             key[:8],
             hit.strategy.value if hit.strategy else "?",
-            len(self._l1_cache),
-            " (evicted oldest)" if evicted else "",
         )
 
     async def _search_templates(self, question: str) -> Optional[CacheHit]:
@@ -589,6 +619,7 @@ class Medha:
                 ),
             )
 
+            self._total_stored += 1
             logger.info("Stored: '%s' -> '%s'", question[:50], generated_query[:50])
             return True
 
@@ -690,6 +721,7 @@ class Medha:
                     ),
                 )
 
+            self._total_stored += len(cache_entries)
             logger.info("Batch stored %d entries", len(cache_entries))
             return True
 
@@ -730,6 +762,52 @@ class Medha:
             raise TemplateError(
                 f"Failed to load templates from '{file_path}': {e}"
             ) from e
+
+    async def warm_from_file(self, path: str) -> int:
+        """Warm the cache from a JSON or JSONL file.
+
+        Supports two formats:
+          - JSON array: ``[{"question": ..., "generated_query": ...}, ...]``
+          - JSONL: one JSON object per line (same keys)
+
+        Optional per-entry keys: ``response_summary``, ``template_id``.
+
+        Args:
+            path: Path to the file.
+
+        Returns:
+            Number of entries successfully stored.
+
+        Raises:
+            MedhaError: If the file cannot be read or parsed.
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+
+            if content.startswith("["):
+                entries = json.loads(content)
+            else:
+                entries = [
+                    json.loads(line)
+                    for line in content.splitlines()
+                    if line.strip()
+                ]
+        except Exception as e:
+            raise MedhaError(f"warm_from_file: cannot read '{path}': {e}") from e
+
+        if not entries:
+            logger.warning("warm_from_file: no entries found in '%s'", path)
+            return 0
+
+        ok = await self.store_batch(entries)
+        count = len(entries) if ok else 0
+        if ok:
+            self._warm_loaded += count
+            logger.info("Cache warmed: %d entries from '%s'", count, path)
+        else:
+            logger.error("warm_from_file: store_batch failed for '%s'", path)
+        return count
 
     async def _sync_templates_to_backend(self) -> None:
         """Sync in-memory templates to the template collection in the backend.
@@ -900,24 +978,87 @@ class Medha:
 
     @property
     def stats(self) -> Dict:
-        """Return cache performance statistics."""
+        """Return cache performance statistics.
+
+        Includes per-tier hit counts, average latency in milliseconds,
+        total entries stored, and warm-loaded count.
+        """
         total = sum(self._stats.values())
         hit_count = total - self._stats["misses"] - self._stats["errors"]
+        tier_latencies = {
+            tier: {
+                "avg_ms": round(data["total_ms"] / data["calls"], 3) if data["calls"] > 0 else 0.0,
+                "total_ms": round(data["total_ms"], 3),
+                "calls": data["calls"],
+            }
+            for tier, data in self._tier_latencies.items()
+        }
         return {
             "total_requests": total,
             "hit_rate": (hit_count / total * 100) if total > 0 else 0.0,
             "by_strategy": dict(self._stats),
-            "l1_cache_size": len(self._l1_cache),
+            "tier_latencies_ms": tier_latencies,
+            "l1_cache_size": self._l1_backend.size,
             "embedding_cache_size": len(self._embedding_cache),
             "templates_loaded": len(self._templates),
+            "total_stored": self._total_stored,
+            "warm_loaded": self._warm_loaded,
         }
 
-    def clear_caches(self) -> None:
-        """Clear all in-memory caches (L1, embedding). Backend data is preserved."""
-        self._l1_cache.clear()
+    async def clear_caches(self) -> None:
+        """Clear all caches (L1, embedding). Backend data is preserved."""
+        await self._l1_backend.clear()
         self._embedding_cache.clear()
         self._stats = {k: 0 for k in self._stats}
+        for data in self._tier_latencies.values():
+            data["total_ms"] = 0.0
+            data["calls"] = 0
+        self._total_stored = 0
+        self._warm_loaded = 0
         logger.info("In-memory caches cleared")
+
+    # --- Persistent Embedding Cache ---
+
+    def _load_embedding_cache_from_disk(self) -> None:
+        """Load persisted embeddings from disk into the in-memory cache.
+
+        Silently skips if the file does not exist yet (first run).
+        """
+        path = self._settings.embedding_cache_path
+        if not path:
+            return
+        try:
+            import os
+            if not os.path.exists(path):
+                logger.debug("Embedding cache file not found at '%s', starting empty", path)
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data: Dict[str, List[float]] = json.load(f)
+            loaded = 0
+            for key, vec in data.items():
+                if len(self._embedding_cache) >= self._embedding_cache_max:
+                    break
+                self._embedding_cache[key] = vec
+                loaded += 1
+            logger.info("Loaded %d embeddings from disk cache '%s'", loaded, path)
+        except Exception as exc:
+            logger.warning("Failed to load embedding cache from '%s': %s", path, exc)
+
+    def _save_embedding_cache_to_disk(self) -> None:
+        """Persist the current in-memory embedding cache to disk."""
+        path = self._settings.embedding_cache_path
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(dict(self._embedding_cache), f)
+            logger.info(
+                "Saved %d embeddings to disk cache '%s'",
+                len(self._embedding_cache),
+                path,
+            )
+        except Exception as exc:
+            logger.warning("Failed to save embedding cache to '%s': %s", path, exc)
 
     # --- Sync Wrappers ---
 
@@ -928,3 +1069,11 @@ class Medha:
     def store_sync(self, question: str, generated_query: str, **kwargs) -> bool:
         """Synchronous wrapper for store()."""
         return BaseEmbedder._run_sync(self.store(question, generated_query, **kwargs))
+
+    def warm_from_file_sync(self, path: str) -> int:
+        """Synchronous wrapper for warm_from_file()."""
+        return BaseEmbedder._run_sync(self.warm_from_file(path))
+
+    def clear_caches_sync(self) -> None:
+        """Synchronous wrapper for clear_caches()."""
+        BaseEmbedder._run_sync(self.clear_caches())
