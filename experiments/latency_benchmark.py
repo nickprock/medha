@@ -219,28 +219,28 @@ async def benchmark(
 
         # --- Tier 2: Exact match (search with stored questions) ---
         # Clear L1 first so we measure vector search, not L1 hits
-        medha.clear_caches()
+        await medha.clear_caches()
         print(f"  Measuring exact match ({query_count} queries)...")
         tier_results = {}
         tier_results["exact_match"] = await measure_tier(medha, sample)
         print(f"    mean={tier_results['exact_match']['mean_ms']:.2f}ms")
 
         # --- Tier 3: Semantic match (search with paraphrased questions) ---
-        medha.clear_caches()
+        await medha.clear_caches()
         print(f"  Measuring semantic match ({query_count} queries)...")
         paraphrased = paraphrase(sample)
         tier_results["semantic_match"] = await measure_tier(medha, paraphrased)
         print(f"    mean={tier_results['semantic_match']['mean_ms']:.2f}ms")
 
         # --- No match (search with unrelated questions) ---
-        medha.clear_caches()
+        await medha.clear_caches()
         print(f"  Measuring no-match ({query_count} queries)...")
         unrelated = generate_unrelated(query_count)
         tier_results["no_match"] = await measure_tier(medha, unrelated)
         print(f"    mean={tier_results['no_match']['mean_ms']:.2f}ms")
 
         # --- Tier 0: L1 cache (must be last — it populates L1) ---
-        medha.clear_caches()
+        await medha.clear_caches()
         print(f"  Measuring L1 cache ({query_count} queries)...")
         tier_results["l1_cache"] = await measure_l1(medha, sample)
         print(f"    mean={tier_results['l1_cache']['mean_ms']:.2f}ms")
