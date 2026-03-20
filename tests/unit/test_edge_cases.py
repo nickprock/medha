@@ -113,7 +113,7 @@ class TestLongInputs:
         """Questions with extra whitespace should be normalized consistently."""
         await medha_instance.start()
         await medha_instance.store("How many users", "SELECT COUNT(*) FROM users")
-        medha_instance._l1_cache.clear()
+        await medha_instance._l1_backend.clear()
         medha_instance._embedding_cache.clear()
         hit = await medha_instance.search("How  many   users")
         # Normalization collapses whitespace — should find the stored entry
@@ -136,7 +136,7 @@ class TestEmbedderErrorPaths:
         )
         await m.start()
         await m.store("test question", "SELECT 1")
-        m._l1_cache.clear()
+        await m._l1_backend.clear()
         m._embedding_cache.clear()
 
         embedder.aembed = AsyncMock(side_effect=EmbeddingError("mock failure"))
@@ -452,7 +452,7 @@ class TestTemplateThreshold:
         )
         await m.start()
         await m.load_templates([no_overlap_template])
-        m._l1_cache.clear()
+        await m._l1_backend.clear()
 
         # This question has no keyword overlap with "zebra elephant giraffe"
         hit = await m.search("How many users are there")
@@ -478,7 +478,7 @@ class TestTemplateThreshold:
         )
         await m.start()
         await m.load_templates([good_template])
-        m._l1_cache.clear()
+        await m._l1_backend.clear()
 
         hit = await m.search("How many users are there")
         # With full keyword overlap the score should exceed 0.70
