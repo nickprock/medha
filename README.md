@@ -1,6 +1,12 @@
 # Medha
 
-![medha_logo](https://github.com/ArchAI-Labs/medha/blob/main/img/medha_logo.png)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/medha-archai?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=BLUE&left_text=downloads)](https://pepy.tech/projects/medha-archai)
+
+<br>
+
+![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_logo.png)
+
+<br>
 
 ## Semantic Memory for AI Data Agents
 
