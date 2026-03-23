@@ -82,3 +82,95 @@ class TestEmbeddingsInit:
         from medha.embeddings import get_openai_adapter
         cls = get_openai_adapter()
         assert cls.__name__ == "OpenAIAdapter"
+
+    def test_fastembed_adapter_raises_import_error_when_not_installed(self):
+        """FastEmbedAdapter.__init__ raises ImportError when fastembed is unavailable."""
+        import medha.embeddings.fastembed_adapter as mod
+        from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+        original = mod._FASTEMBED_AVAILABLE
+        try:
+            mod._FASTEMBED_AVAILABLE = False
+            with pytest.raises(ImportError, match="pip install medha"):
+                FastEmbedAdapter()
+        finally:
+            mod._FASTEMBED_AVAILABLE = original
+
+    def test_openai_adapter_raises_import_error_when_not_installed(self):
+        """OpenAIAdapter.__init__ raises ImportError when openai is unavailable."""
+        import medha.embeddings.openai_adapter as mod
+        from medha.embeddings.openai_adapter import OpenAIAdapter
+
+        original = mod._OPENAI_AVAILABLE
+        try:
+            mod._OPENAI_AVAILABLE = False
+            with pytest.raises(ImportError, match="pip install medha"):
+                OpenAIAdapter()
+        finally:
+            mod._OPENAI_AVAILABLE = original
+
+
+class TestFastEmbedAdapterErrors:
+    """Tests for EmbeddingError (replacing assert) in FastEmbedAdapter."""
+
+    def _uninitialized(self):
+        """Return a FastEmbedAdapter instance bypassing __init__."""
+        from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+        return object.__new__(FastEmbedAdapter)
+
+    def test_dimension_raises_embedding_error_when_not_initialized(self):
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._dimension = None
+        with pytest.raises(EmbeddingError, match="dimension"):
+            _ = instance.dimension
+
+    def test_embed_sync_raises_embedding_error_when_model_none(self):
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._model = None
+        with pytest.raises(EmbeddingError, match="not initialized"):
+            instance._embed_sync("test")
+
+    def test_embed_batch_sync_raises_embedding_error_when_model_none(self):
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._model = None
+        with pytest.raises(EmbeddingError, match="not initialized"):
+            instance._embed_batch_sync(["test"])
+
+    def test_no_assertion_error_on_dimension(self):
+        """Verify AssertionError is NOT raised (assertions disabled with -O)."""
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._dimension = None
+        try:
+            _ = instance.dimension
+            assert False, "Expected EmbeddingError"
+        except EmbeddingError:
+            pass
+        except AssertionError:
+            pytest.fail("dimension raised AssertionError instead of EmbeddingError")
+
+
+class TestOpenAIAdapterErrors:
+    """Tests for EmbeddingError (replacing assert) in OpenAIAdapter."""
+
+    def _uninitialized(self):
+        """Return an OpenAIAdapter instance bypassing __init__."""
+        from medha.embeddings.openai_adapter import OpenAIAdapter
+        return object.__new__(OpenAIAdapter)
+
+    async def test_aembed_raises_embedding_error_when_client_none(self):
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._client = None
+        with pytest.raises(EmbeddingError, match="not initialized"):
+            await instance.aembed("test")
+
+    async def test_aembed_batch_raises_embedding_error_when_client_none(self):
+        from medha.exceptions import EmbeddingError
+        instance = self._uninitialized()
+        instance._client = None
+        with pytest.raises(EmbeddingError, match="not initialized"):
+            await instance.aembed_batch(["test"])

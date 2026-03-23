@@ -1,5 +1,7 @@
 """Qdrant backend supporting memory, Docker, and cloud deployment modes."""
 
+from __future__ import annotations
+
 import logging
 from typing import List, Optional
 
@@ -123,9 +125,16 @@ class QdrantBackend(VectorStorageBackend):
                     "Created collection '%s' (dim=%d)", collection_name, dimension
                 )
 
-                # Create payload indexes only on main collection (not _templates)
-                if not collection_name.endswith("_templates"):
-                    await self._create_payload_indexes(collection_name)
+                # Create payload indexes only on main collection (not template collections)
+                if not collection_name.startswith("__medha_templates_"):
+                    try:
+                        await self._create_payload_indexes(collection_name)
+                    except Exception as idx_err:
+                        logger.warning(
+                            "Payload indexes not created on '%s' (non-critical): %s",
+                            collection_name,
+                            idx_err,
+                        )
             else:
                 logger.info(
                     "Collection '%s' already exists, skipping creation",
