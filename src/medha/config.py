@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,8 +35,38 @@ class Settings(BaseSettings):
     # --- Search thresholds ---
     score_threshold_exact: float = Field(default=0.99, ge=0.0, le=1.0)
     score_threshold_semantic: float = Field(default=0.90, ge=0.0, le=1.0)
-    score_threshold_template: float = Field(default=0.70, ge=0.0, le=1.0)
+    score_threshold_template: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum score for a template match to be returned. "
+            "The maximum achievable score is ~0.88 "
+            "(keyword_bonus=1.0 × 0.5 + param_completeness=1.0 × 0.3 + priority_1 × 0.08). "
+            "Values above 0.88 will never match any template."
+        ),
+    )
     score_threshold_fuzzy: float = Field(default=85.0, ge=0.0, le=100.0, description="Fuzzy match threshold (0-100)")
+    score_threshold_fuzzy_prefilter: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine similarity for the vector pre-filter used in fuzzy search. "
+            "Candidates below this threshold are excluded before Levenshtein scoring, "
+            "reducing fuzzy search from O(n) to O(top_k). Lower values increase recall "
+            "at the cost of more fuzzy comparisons."
+        ),
+    )
+    fuzzy_prefilter_top_k: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description=(
+            "Maximum number of vector-similar candidates to retrieve for fuzzy pre-filtering. "
+            "Fuzzy scoring is applied only to these candidates instead of the full collection."
+        ),
+    )
 
     # --- L1 Cache ---
     l1_cache_max_size: int = Field(default=1000, ge=0, description="Max entries in L1 in-memory cache (0=disabled)")
@@ -73,8 +103,28 @@ class Settings(BaseSettings):
     # --- Template loading ---
     template_file: Optional[str] = Field(default=None, description="Path to JSON template file")
 
+    # --- Persistent embedding cache ---
+    embedding_cache_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a JSON file used to persist the embedding cache across restarts. "
+            "When set, embeddings are loaded from disk on start() and saved to disk on close(). "
+            "Speeds up warm-start scenarios where the same questions recur across sessions."
+        ),
+    )
+
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
+
+    # --- Timeouts ---
+    embedding_timeout: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Timeout in seconds for embedding calls (aembed and aembed_batch). "
+            "None disables the timeout. Increase for large batches or slow networks."
+        ),
+    )
 
     # --- Validators ---
     @field_validator("score_threshold_exact")
@@ -86,7 +136,7 @@ class Settings(BaseSettings):
 
     @field_validator("score_threshold_semantic")
     @classmethod
-    def semantic_below_exact(cls, v: float, info) -> float:  # type: ignore[type-arg]
+    def semantic_below_exact(cls, v: float, info: ValidationInfo) -> float:
         exact = info.data.get("score_threshold_exact", 0.99)
         if v >= exact:
             raise ValueError("Semantic threshold must be lower than exact threshold")

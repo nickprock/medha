@@ -6,11 +6,14 @@ from medha.core import Medha
 from medha.config import Settings
 from medha.types import CacheHit, QueryTemplate, CacheEntry, CacheResult, SearchStrategy
 from medha.interfaces.embedder import BaseEmbedder
+from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
+from medha.l1_cache.memory import InMemoryL1Cache
+from medha.l1_cache.redis_adapter import RedisL1Cache
 from medha.logging import setup_logging
 
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
-    "CacheResult", "SearchStrategy", "BaseEmbedder", "VectorStorageBackend",
-    "setup_logging",
+    "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",
+    "VectorStorageBackend", "InMemoryL1Cache", "RedisL1Cache", "setup_logging",
 ]

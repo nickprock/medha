@@ -39,12 +39,9 @@ Medha uses a sophisticated multi-tier search strategy to maximize cache hits. If
 2.  **Tier 1: Template Matching (Intent)**
     * *Speed:* ~10ms
     * Recognizes patterns like *"Show employees in {department}"*. Extracts parameters and injects them into a cached query template.
-3.  **Tier 2: Exact Vector Match**
-    * *Speed:* ~20ms
-    * Uses high-threshold vector search (Qdrant) to find semantically identical questions.
-4.  **Tier 3: Semantic Similarity**
-    * *Speed:* ~25ms
-    * Finds questions with the same meaning but different phrasing (e.g., *"Who works here?"* vs *"List employees"*).
+3.  **Tier 2 + 3: Exact Vector Match & Semantic Similarity** *(run in parallel)*
+    * *Speed:* ~25ms (concurrent, not sequential)
+    * Exact match uses a high threshold (≥ 0.99); Semantic uses a lower one (≥ 0.90). Both vector queries are fired simultaneously via `asyncio.gather` and the best result is chosen.
 5.  **Tier 4: Fuzzy Fallback**
     * *Speed:* Variable
     * Handles typos and minor string variations using Levenshtein distance.
@@ -77,8 +74,15 @@ pip install "medha-archai[openai]"
 # Fuzzy matching (Tier 4 - Levenshtein distance)
 pip install "medha-archai[fuzzy]"
 
-# spaCy NLP for advanced parameter extraction
+# spaCy NLP for parameter extraction (pre-trained, fixed entity types, ~15 MB model)
 pip install "medha-archai[nlp]"
+python -m spacy download en_core_web_sm
+
+# GLiNER NLP for zero-shot parameter extraction (uses param names as labels, ~500 MB model)
+pip install "medha-archai[gliner]"
+
+# Distributed L1 cache (Redis — for multi-instance deployments)
+pip install "medha-archai[redis]"
 
 # Everything
 pip install "medha-archai[all]"
@@ -408,6 +412,130 @@ settings = Settings(l1_cache_max_size=0)
 
 ---
 
+## Cache Warming
+
+Pre-populate the cache from a file before serving traffic. Supports both **JSON array** and **JSONL** formats.
+
+```jsonc
+// warm_queries.jsonl  — one entry per line
+{"question": "How many users are active?", "generated_query": "SELECT COUNT(*) FROM users WHERE status = 'active';"}
+{"question": "Total revenue this month", "generated_query": "SELECT SUM(amount) FROM orders WHERE date >= DATE_TRUNC('month', NOW());", "response_summary": "Monthly revenue total"}
+```
+
+```python
+import asyncio
+from medha import Medha
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+async def main():
+    async with Medha(
+        collection_name="my_cache",
+        embedder=FastEmbedAdapter(),
+    ) as cache:
+        # Load from JSONL (also accepts JSON array files)
+        loaded = await cache.warm_from_file("warm_queries.jsonl")
+        print(f"Warmed {loaded} entries")
+
+        # Sync variant
+        # loaded = cache.warm_from_file_sync("warm_queries.json")
+
+        print(cache.stats["warm_loaded"])  # 2
+
+asyncio.run(main())
+```
+
+**Required keys per entry:** `question`, `generated_query`
+**Optional keys:** `response_summary`, `template_id`
+
+Internally calls `store_batch()` — a single embedding round-trip for all entries.
+
+---
+
+## Distributed L1 Cache (Redis)
+
+By default Medha's L1 cache is in-process. With multiple service instances (horizontal scaling) each process has its own isolated cache. Use `RedisL1Cache` to share the L1 cache across instances.
+
+```bash
+pip install "medha-archai[redis]"
+```
+
+```python
+from medha import Medha
+from medha.l1_cache.redis_adapter import RedisL1Cache
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+# Shared L1 cache — all instances see the same hits
+redis_l1 = RedisL1Cache(
+    url="redis://redis.internal:6379/0",
+    prefix="myapp:medha:l1",   # namespace to avoid key collisions
+    ttl=3600,                   # 1-hour TTL per entry (optional)
+)
+
+async with Medha(
+    collection_name="prod_cache",
+    embedder=FastEmbedAdapter(),
+    l1_backend=redis_l1,
+) as cache:
+    await cache.store("How many users?", "SELECT COUNT(*) FROM users;")
+    hit = await cache.search("How many users?")
+    print(hit.strategy.value)  # l1_cache (served from Redis)
+```
+
+> **Redis eviction:** Configure `maxmemory-policy allkeys-lru` on the Redis server for automatic LRU eviction when memory is full.
+
+### Custom L1 Backend
+
+Implement `L1CacheBackend` to use any fast store (Memcached, DynamoDB DAX, etc.):
+
+```python
+from medha.interfaces.l1_cache import L1CacheBackend
+from medha.types import CacheHit
+from typing import Optional
+
+class MyL1Cache(L1CacheBackend):
+    async def get(self, key: str) -> Optional[CacheHit]: ...
+    async def set(self, key: str, value: CacheHit) -> None: ...
+    async def clear(self) -> None: ...
+
+    @property
+    def size(self) -> int: ...
+
+cache = Medha(..., l1_backend=MyL1Cache())
+```
+
+---
+
+## Persistent Embedding Cache
+
+By default the embedding cache is in-memory and lost on restart. Set `embedding_cache_path` to persist it across sessions — useful when the same questions recur between deployments.
+
+```bash
+export MEDHA_EMBEDDING_CACHE_PATH=/var/cache/medha/embeddings.json
+```
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+settings = Settings(
+    qdrant_mode="docker",
+    embedding_cache_path="/var/cache/medha/embeddings.json",
+)
+
+async with Medha(
+    collection_name="my_cache",
+    embedder=FastEmbedAdapter(),
+    settings=settings,
+) as cache:
+    # On start(): embeddings loaded from disk (if file exists)
+    await cache.store("show active users", "SELECT * FROM users WHERE active = true;")
+    # On close(): embeddings saved to disk automatically
+```
+
+No extra dependencies — uses stdlib `json`.
+
+---
+
 ## Template Matching
 
 Templates allow Medha to recognize parameterized patterns and generate queries dynamically without an LLM call.
@@ -525,6 +653,78 @@ async with Medha(
 
 ---
 
+## Parameter Extraction (NER)
+
+Template matching requires extracting parameter values (e.g. `{department}`, `{person}`) from the user's question. `ParameterExtractor` applies a cascading strategy:
+
+1. **Regex** — patterns defined in `template.parameter_patterns` (fastest, most precise)
+2. **GLiNER** — zero-shot NER, uses `template.parameters` directly as entity labels
+3. **spaCy** — pre-trained NER with a fixed label set mapped to parameter names
+4. **Heuristics** — numbers and capitalized words as last resort
+
+### spaCy (pre-trained, fixed labels)
+
+spaCy recognizes standard entity types (`PERSON`, `ORG`, `CARDINAL`) and maps them to parameter names.
+
+```python
+from medha.utils.nlp import ParameterExtractor
+
+ext = ParameterExtractor(use_spacy=True)
+print(ext.spacy_available)  # True if en_core_web_sm is installed
+```
+
+### GLiNER (zero-shot, arbitrary labels)
+
+GLiNER receives `template.parameters` directly as entity labels — no mapping table needed.
+It excels with domain-specific entities that spaCy cannot recognize without custom training.
+
+```python
+from medha.utils.nlp import ParameterExtractor
+
+# Default model: urchade/gliner_medium-v2.1
+ext = ParameterExtractor(use_gliner=True)
+
+# Lighter variant (~250 MB)
+ext = ParameterExtractor(use_gliner=True, gliner_model="urchade/gliner_small-v2.1")
+
+print(ext.gliner_available)  # True if gliner package is installed
+```
+
+### Both enabled (recommended for mixed template sets)
+
+```python
+from medha.utils.nlp import ParameterExtractor
+from medha.types import QueryTemplate
+
+ext = ParameterExtractor(use_spacy=True, use_gliner=True)
+
+template = QueryTemplate(
+    intent="org_project_issues",
+    template_text="Show open issues for {org} on project {project}",
+    query_template="SELECT * FROM issues WHERE org='{org}' AND project='{project}' AND status='open'",
+    parameters=["org", "project"],
+    # No regex needed — GLiNER resolves both from the param names directly
+)
+
+params = ext.extract("Show open issues for Acme Corp on project Apollo", template)
+# {"org": "Acme Corp", "project": "Apollo"}
+
+query = ext.render_query(template, params)
+# SELECT * FROM issues WHERE org='Acme Corp' AND project='Apollo' AND status='open'
+```
+
+| Scenario | Recommended backend |
+|---|---|
+| Numeric or enum parameters | Regex only (`use_spacy=False, use_gliner=False`) |
+| Standard entities (person, org, number) | spaCy (`use_spacy=True`) |
+| Domain-specific or unpredictable param names | GLiNER (`use_gliner=True`) |
+| Mixed templates in the same app | Both enabled — cascade handles it |
+| Edge / resource-constrained deployment | Regex + heuristics only |
+
+Both backends fall back gracefully if the package is not installed.
+
+---
+
 ## Batch Operations
 
 Efficiently store many question-query pairs at once.
@@ -594,6 +794,12 @@ asyncio.run(cache.start())
 cache.store_sync("List all products", "SELECT * FROM products;")
 hit = cache.search_sync("Show me all products")
 print(f"{hit.strategy.value}: {hit.generated_query}")
+
+# Warm from file synchronously
+loaded = cache.warm_from_file_sync("warm_queries.jsonl")
+
+# Clear caches synchronously
+cache.clear_caches_sync()
 
 # Clean up
 asyncio.run(cache.close())
@@ -764,12 +970,28 @@ async def main():
 
         # Check stats
         stats = cache.stats
-        print(f"Total requests: {stats['total_requests']}")
-        print(f"Hit rate: {stats['hit_rate']:.1f}%")
-        print(f"L1 hits: {stats['by_strategy']['l1_hits']}")
-        print(f"Semantic hits: {stats['by_strategy']['semantic_hits']}")
-        print(f"Misses: {stats['by_strategy']['misses']}")
-        print(f"Templates loaded: {stats['templates_loaded']}")
+        print(f"Total requests:  {stats['total_requests']}")
+        print(f"Hit rate:        {stats['hit_rate']:.1f}%")
+        print(f"L1 hits:         {stats['by_strategy']['l1_hits']}")
+        print(f"Semantic hits:   {stats['by_strategy']['semantic_hits']}")
+        print(f"Misses:          {stats['by_strategy']['misses']}")
+        print(f"Total stored:    {stats['total_stored']}")
+        print(f"Warm loaded:     {stats['warm_loaded']}")
+        print(f"Templates:       {stats['templates_loaded']}")
+
+        # Per-tier latency breakdown (ms)
+        for tier, data in stats["tier_latencies_ms"].items():
+            print(f"  {tier:12s}  avg={data['avg_ms']:.2f}ms  calls={data['calls']}")
+
+        # Example output:
+        # Total requests:  3
+        # Hit rate:        66.7%
+        # ...
+        #   l1_cache      avg=0.01ms  calls=3
+        #   template      avg=1.20ms  calls=3
+        #   exact         avg=18.40ms calls=1
+        #   semantic      avg=18.40ms calls=1
+        #   fuzzy         avg=0.00ms  calls=0
 
 asyncio.run(main())
 ```
@@ -852,6 +1074,9 @@ settings = Settings(
 
     # Templates from file
     template_file="production_templates.json",
+
+    # Persist embedding cache across restarts
+    embedding_cache_path="/var/cache/medha/embeddings.json",
 )
 
 # OpenAI embeddings
@@ -880,13 +1105,20 @@ templates = [
 ]
 
 async def main():
+    from medha.l1_cache.redis_adapter import RedisL1Cache
+
     async with Medha(
         collection_name="production_text2sql",
         embedder=embedder,
         settings=settings,
         templates=templates,
+        # Shared L1 cache across all service instances
+        l1_backend=RedisL1Cache(url="redis://redis.internal:6379/0", ttl=3600),
     ) as cache:
-        # Pre-warm cache with common queries
+        # Pre-warm cache from a curated file of known queries
+        await cache.warm_from_file("common_queries.jsonl")
+
+        # Or inline with store_batch for dynamic queries
         await cache.store_batch([
             {
                 "question": "How many active users?",
@@ -919,30 +1151,62 @@ asyncio.run(main())
 
 ## API Reference Summary
 
-| Class / Function | Description |
+### Core
+
+| Class / Method | Description |
 |---|---|
 | `Medha` | Core cache class with waterfall search |
+| `Medha.search(question)` | Waterfall search → `CacheHit` |
+| `Medha.store(question, query, ...)` | Store a question-query pair |
+| `Medha.store_batch(entries)` | Bulk store (single embedding round-trip) |
+| `Medha.warm_from_file(path)` | Pre-populate cache from JSON / JSONL file |
+| `Medha.load_templates(templates)` | Load `QueryTemplate` list at runtime |
+| `Medha.load_templates_from_file(path)` | Load templates from JSON file |
+| `Medha.stats` | Dict with hit rates, per-tier latencies, stored/warm counts |
+| `Medha.clear_caches()` | Clear L1 + embedding caches (async) |
+| `Medha.search_sync` / `store_sync` / `warm_from_file_sync` / `clear_caches_sync` | Sync wrappers |
+
+### Configuration & Types
+
+| Class | Description |
+|---|---|
 | `Settings` | Pydantic configuration with env var support (`MEDHA_` prefix) |
-| `CacheHit` | Search result with `generated_query`, `confidence`, `strategy` |
+| `CacheHit` | Search result: `generated_query`, `confidence`, `strategy` |
 | `QueryTemplate` | Parameterized question-to-query template |
 | `CacheEntry` | Stored cache entry with vector and metadata |
 | `CacheResult` | Backend search result with score |
 | `SearchStrategy` | Enum: `l1_cache`, `template_match`, `exact_match`, `semantic_match`, `fuzzy_match`, `no_match`, `error` |
+
+### Interfaces & Backends
+
+| Class | Description |
+|---|---|
 | `BaseEmbedder` | Abstract interface for embedding providers |
+| `L1CacheBackend` | Abstract interface for L1 cache backends |
 | `VectorStorageBackend` | Abstract interface for vector storage backends |
 | `FastEmbedAdapter` | Local embeddings via FastEmbed (ONNX) |
 | `OpenAIAdapter` | OpenAI embedding API adapter |
 | `QdrantBackend` | Qdrant vector storage (memory / docker / cloud) |
+| `InMemoryL1Cache` | Default in-process LRU L1 cache |
+| `RedisL1Cache` | Redis-backed L1 cache (`pip install medha[redis]`) |
+
+### Utilities
+
+| Function | Description |
+|---|---|
 | `setup_logging()` | Configure the `medha` logger |
+| `ParameterExtractor` | NER-based parameter extractor (regex → GLiNER → spaCy → heuristics) |
 
 ---
 
 ## Roadmap
 
-* [ ] Support for Redis as L1 Cache backend.
-* [ ] Auto-eviction policies based on query execution feedback (RLHF).
-* [ ] "Golden Query" tagging for verified SQL/Cypher.
-* [ ] Dashboard for cache hit/miss analytics.
+* [x] Redis L1 Cache backend (`RedisL1Cache`, `pip install medha[redis]`).
+* [x] Cache warming from JSON / JSONL file (`warm_from_file`).
+* [x] Per-tier latency stats (`tier_latencies_ms` in `cache.stats`).
+* [x] Persistent embedding cache (`MEDHA_EMBEDDING_CACHE_PATH`).
+* [x] Parallel execution of Tier 2 (exact) and Tier 3 (semantic).
+* [ ] Feedback loop — mark a cache hit as correct/incorrect.
 
 ---
 

@@ -37,3 +37,25 @@ class TestSettings:
         assert isinstance(d, dict)
         assert "qdrant_mode" in d
         assert "score_threshold_exact" in d
+
+    def test_fuzzy_prefilter_defaults(self):
+        s = Settings()
+        assert s.score_threshold_fuzzy_prefilter == 0.65
+        assert s.fuzzy_prefilter_top_k == 50
+
+    def test_fuzzy_prefilter_threshold_bounds(self):
+        with pytest.raises(ValidationError):
+            Settings(score_threshold_fuzzy_prefilter=1.5)
+        with pytest.raises(ValidationError):
+            Settings(score_threshold_fuzzy_prefilter=-0.1)
+
+    def test_fuzzy_prefilter_top_k_bounds(self):
+        with pytest.raises(ValidationError):
+            Settings(fuzzy_prefilter_top_k=0)
+        with pytest.raises(ValidationError):
+            Settings(fuzzy_prefilter_top_k=1001)
+
+    def test_fuzzy_prefilter_custom_values(self):
+        s = Settings(score_threshold_fuzzy_prefilter=0.50, fuzzy_prefilter_top_k=100)
+        assert s.score_threshold_fuzzy_prefilter == 0.50
+        assert s.fuzzy_prefilter_top_k == 100
