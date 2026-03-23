@@ -1,6 +1,7 @@
 """Unit tests for medha.utils.nlp."""
 
 import pytest
+from unittest.mock import MagicMock, patch
 
 from medha.types import QueryTemplate
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
@@ -10,6 +11,19 @@ from medha.exceptions import ParameterExtractionError
 @pytest.fixture
 def extractor():
     return ParameterExtractor(use_spacy=False)
+
+
+def _make_gliner_extractor(predict_return=None, side_effect=None):
+    """Return a ParameterExtractor with a mocked GLiNER model (no real install needed)."""
+    ext = ParameterExtractor(use_spacy=False, use_gliner=False)
+    mock_gliner = MagicMock()
+    if side_effect is not None:
+        mock_gliner.predict_entities.side_effect = side_effect
+    else:
+        mock_gliner.predict_entities.return_value = predict_return or []
+    ext._gliner = mock_gliner
+    ext._gliner_available = True
+    return ext
 
 
 @pytest.fixture
@@ -145,3 +159,222 @@ class TestExtractionFailure:
         )
         with pytest.raises(ParameterExtractionError):
             extractor.extract("nothing matches here", template)
+
+
+class TestEntityCache:
+    def test_same_text_returns_cached_result(self, extractor):
+        """extract_entities() on the same text must not re-parse."""
+        call_count = 0
+        original_findall = __import__("re").findall
+
+        import re
+
+        def counting_findall(pattern, string, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original_findall(pattern, string, *args, **kwargs)
+
+        import medha.utils.nlp as nlp_module
+        original = nlp_module.re.findall
+        nlp_module.re.findall = counting_findall
+
+        try:
+            extractor.extract_entities("find 5 users")
+            calls_after_first = call_count
+            call_count = 0
+            extractor.extract_entities("find 5 users")  # should hit cache
+            assert call_count == 0, "Cache miss: re.findall was called on repeated input"
+        finally:
+            nlp_module.re.findall = original
+
+    def test_different_texts_are_cached_separately(self, extractor):
+        r1 = extractor.extract_entities("show 5 records")
+        r2 = extractor.extract_entities("show 10 records")
+        assert r1 != r2
+        assert "5" in r1.get("number", [])
+        assert "10" in r2.get("number", [])
+
+    def test_cache_is_populated_after_first_call(self, extractor):
+        extractor._entity_cache.clear()
+        extractor.extract_entities("unique question 42")
+        assert "unique question 42" in extractor._entity_cache
+
+    def test_cache_evicts_when_full(self, extractor):
+        extractor._entity_cache.clear()
+        # Fill cache to max
+        for i in range(ParameterExtractor._ENTITY_CACHE_MAXSIZE):
+            extractor.extract_entities(f"question number {i}")
+        assert len(extractor._entity_cache) == ParameterExtractor._ENTITY_CACHE_MAXSIZE
+        # One more entry triggers eviction (clear-on-full)
+        extractor.extract_entities("overflow question")
+        assert len(extractor._entity_cache) == 1
+
+    def test_cache_hit_returns_same_object(self, extractor):
+        extractor._entity_cache.clear()
+        result1 = extractor.extract_entities("stable text 99")
+        result2 = extractor.extract_entities("stable text 99")
+        assert result1 == result2
+
+
+class TestGLiNERInit:
+    def test_gliner_disabled_by_default(self):
+        ext = ParameterExtractor(use_spacy=False)
+        assert ext.gliner_available is False
+
+    def test_gliner_not_installed_graceful(self):
+        """use_gliner=True with package missing must not raise."""
+        with patch.dict("sys.modules", {"gliner": None}):
+            ext = ParameterExtractor(use_spacy=False, use_gliner=True)
+        assert ext.gliner_available is False
+
+    def test_gliner_available_after_mock_injection(self):
+        ext = _make_gliner_extractor()
+        assert ext.gliner_available is True
+
+    def test_default_model_constant(self):
+        assert ParameterExtractor._GLINER_DEFAULT_MODEL == "urchade/gliner_medium-v2.1"
+
+
+class TestExtractViaGLiNER:
+    @pytest.fixture
+    def person_template(self):
+        return QueryTemplate(
+            intent="find_person",
+            template_text="Find employee {person}",
+            query_template="MATCH (p:Person {{name: '{person}'}}) RETURN p",
+            parameters=["person"],
+        )
+
+    @pytest.fixture
+    def multi_template(self):
+        return QueryTemplate(
+            intent="org_project",
+            template_text="Show {org} project {project}",
+            query_template="SELECT * FROM projects WHERE org='{org}' AND name='{project}'",
+            parameters=["org", "project"],
+        )
+
+    def test_extracts_entity_by_param_name(self, person_template):
+        ext = _make_gliner_extractor(
+            predict_return=[{"label": "person", "text": "Alice", "score": 0.97}]
+        )
+        params = ext.extract("Find employee Alice", person_template)
+        assert params == {"person": "Alice"}
+
+    def test_uses_template_params_as_labels(self, multi_template):
+        """GLiNER must receive exactly template.parameters as labels."""
+        ext = _make_gliner_extractor(
+            predict_return=[
+                {"label": "org", "text": "Acme", "score": 0.95},
+                {"label": "project", "text": "Apollo", "score": 0.93},
+            ]
+        )
+        ext.extract("Show Acme project Apollo", multi_template)
+        called_labels = ext._gliner.predict_entities.call_args[0][1]
+        assert set(called_labels) == set(multi_template.parameters)
+
+    def test_ignores_entity_with_unknown_label(self, person_template):
+        """Entities whose label is not in template.parameters must be dropped."""
+        ext = _make_gliner_extractor(
+            predict_return=[
+                {"label": "irrelevant_label", "text": "foo", "score": 0.99},
+            ]
+        )
+        # All lowercase → no capitalized word for heuristics either → must raise
+        with pytest.raises(ParameterExtractionError):
+            ext.extract("find employee foo", person_template)
+
+    def test_takes_first_entity_per_label(self, person_template):
+        """When GLiNER returns multiple spans for the same label, keep the first."""
+        ext = _make_gliner_extractor(
+            predict_return=[
+                {"label": "person", "text": "Alice", "score": 0.97},
+                {"label": "person", "text": "Bob", "score": 0.85},
+            ]
+        )
+        params = ext.extract("Find employee Alice or Bob", person_template)
+        assert params["person"] == "Alice"
+
+    def test_prediction_error_falls_through_to_heuristics(self, person_template):
+        """If predict_entities raises, cascade continues to heuristics."""
+        ext = _make_gliner_extractor(side_effect=RuntimeError("model error"))
+        # Lowercase prefix so "Alice" is the only capitalized word — heuristics catch it
+        params = ext.extract("find employee Alice", person_template)
+        assert params == {"person": "Alice"}
+
+    def test_empty_prediction_falls_through(self, person_template):
+        """Empty GLiNER result must fall through to heuristics."""
+        ext = _make_gliner_extractor(predict_return=[])
+        params = ext.extract("find employee Alice", person_template)
+        assert params == {"person": "Alice"}
+
+    def test_no_parameters_template_skips_gliner(self):
+        """Template with no parameters must skip GLiNER entirely."""
+        ext = _make_gliner_extractor()
+        template = QueryTemplate(
+            intent="list_all",
+            template_text="Show all records",
+            query_template="SELECT * FROM records",
+        )
+        params = ext.extract("Show all records", template)
+        assert params == {}
+        ext._gliner.predict_entities.assert_not_called()
+
+
+class TestCascadeWithGLiNER:
+    @pytest.fixture
+    def mixed_template(self):
+        return QueryTemplate(
+            intent="top_n_person",
+            template_text="Show top {count} records for {person}",
+            query_template="SELECT TOP {count} * FROM records WHERE person='{person}'",
+            parameters=["count", "person"],
+            parameter_patterns={"count": r"\b(\d+)\b"},
+        )
+
+    def test_regex_fills_count_gliner_fills_person(self, mixed_template):
+        """Regex extracts count, GLiNER fills the remaining person param."""
+        ext = _make_gliner_extractor(
+            predict_return=[{"label": "person", "text": "Alice", "score": 0.96}]
+        )
+        params = ext.extract("Show top 5 records for Alice", mixed_template)
+        assert params["count"] == "5"
+        assert params["person"] == "Alice"
+
+    def test_gliner_called_before_spacy(self, mixed_template):
+        """When both enabled, GLiNER predict_entities must be called before spaCy."""
+        call_order = []
+
+        ext = ParameterExtractor(use_spacy=False, use_gliner=False)
+
+        mock_gliner = MagicMock()
+        mock_gliner.predict_entities.side_effect = lambda q, labels: (
+            call_order.append("gliner") or [{"label": "person", "text": "Alice", "score": 0.9}]
+        )
+        ext._gliner = mock_gliner
+        ext._gliner_available = True
+
+        mock_nlp = MagicMock()
+        mock_nlp.return_value.ents = []
+        ext._nlp = mock_nlp
+        ext._spacy_available = True
+
+        ext.extract("Show top 5 records for Alice", mixed_template)
+        assert call_order[0] == "gliner"
+
+    def test_gliner_result_not_overwritten_by_spacy(self, mixed_template):
+        """A param already filled by GLiNER must not be overwritten by spaCy."""
+        ext = _make_gliner_extractor(
+            predict_return=[{"label": "person", "text": "GlinerAlice", "score": 0.99}]
+        )
+
+        mock_doc = MagicMock()
+        spacy_ent = MagicMock()
+        spacy_ent.label_ = "PERSON"
+        spacy_ent.text = "SpacyBob"
+        mock_doc.ents = [spacy_ent]
+        ext._nlp = MagicMock(return_value=mock_doc)
+        ext._spacy_available = True
+
+        params = ext.extract("Show top 5 records for GlinerAlice", mixed_template)
+        assert params["person"] == "GlinerAlice"

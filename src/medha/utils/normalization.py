@@ -1,5 +1,7 @@
 """Text normalization: lowercasing, whitespace cleanup, synonym replacement."""
 
+from __future__ import annotations
+
 import logging
 import re
 import hashlib
