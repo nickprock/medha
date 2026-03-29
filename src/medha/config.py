@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +14,17 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+    )
+
+    # --- Backend selection ---
+    backend_type: Literal["qdrant", "memory", "pgvector"] = Field(
+        default="qdrant",
+        description=(
+            "Vector storage backend to use. "
+            "'qdrant' requires qdrant-client (default). "
+            "'memory' uses pure Python in-process storage, zero external deps. "
+            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector])."
+        ),
     )
 
     # --- Backend ---
@@ -81,6 +92,28 @@ class Settings(BaseSettings):
     )
     on_disk: bool = Field(default=False, description="Store vectors on disk (large datasets)")
 
+    # --- PostgreSQL / pgvector ---
+    pg_dsn: Optional[str] = Field(
+        default=None,
+        description=(
+            "Full asyncpg DSN for PostgreSQL connection "
+            "(e.g. 'postgresql://user:pass@localhost:5432/dbname'). "
+            "When set, overrides pg_host, pg_port, pg_database, pg_user, pg_password."
+        ),
+    )
+    pg_host: str = Field(default="localhost", description="PostgreSQL host")
+    pg_port: int = Field(default=5432, ge=1, le=65535, description="PostgreSQL port")
+    pg_database: str = Field(default="medha", description="PostgreSQL database name")
+    pg_user: str = Field(default="postgres", description="PostgreSQL user")
+    pg_password: SecretStr = Field(default=SecretStr(""), description="PostgreSQL password")
+    pg_schema: str = Field(default="public", description="PostgreSQL schema for Medha tables")
+    pg_table_prefix: str = Field(
+        default="medha",
+        description="Prefix for Medha table names (e.g. 'medha' → table 'medha_my_cache')",
+    )
+    pg_pool_min_size: int = Field(default=2, ge=1, description="Min connections in asyncpg pool")
+    pg_pool_max_size: int = Field(default=10, ge=1, description="Max connections in asyncpg pool")
+
     # --- Quantization search ---
     quantization_rescore: bool = Field(
         default=True,
@@ -127,6 +160,16 @@ class Settings(BaseSettings):
     )
 
     # --- Validators ---
+    @field_validator("pg_pool_max_size")
+    @classmethod
+    def pool_max_gte_min(cls, v: int, info: ValidationInfo) -> int:
+        min_size = info.data.get("pg_pool_min_size", 2)
+        if v < min_size:
+            raise ValueError(
+                f"pg_pool_max_size ({v}) must be >= pg_pool_min_size ({min_size})"
+            )
+        return v
+
     @field_validator("score_threshold_exact")
     @classmethod
     def exact_must_be_high(cls, v: float) -> float:

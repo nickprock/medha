@@ -18,7 +18,7 @@ from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
 from medha.utils.normalization import normalize_question, question_hash, query_hash
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
-from medha.exceptions import MedhaError, EmbeddingError, StorageError, TemplateError
+from medha.exceptions import MedhaError, EmbeddingError, StorageError, TemplateError, ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +72,8 @@ class Medha:
         self._settings = settings or Settings()
         self._templates = templates or []
 
-        # Backend: default to Qdrant if not provided
-        if backend is None:
-            from medha.backends.qdrant import QdrantBackend
-            self._backend = QdrantBackend(self._settings)
-        else:
-            self._backend = backend
+        # Backend: use provided instance or build from settings.backend_type
+        self._backend = backend if backend is not None else self._build_backend()
 
         # L1 cache (Tier 0) — pluggable: in-memory (default) or Redis
         if l1_backend is not None:
@@ -116,6 +112,33 @@ class Medha:
         }
         self._total_stored = 0
         self._warm_loaded = 0
+
+    # --- Private helpers ---
+
+    def _build_backend(self) -> VectorStorageBackend:
+        """Instantiate the correct vector backend from settings.backend_type.
+
+        Called only when no backend is passed to __init__. Allows users to
+        configure the backend via Settings without importing backend classes.
+
+        Returns:
+            A VectorStorageBackend instance (not yet connected/initialized).
+
+        Raises:
+            ConfigurationError: If backend_type is unknown or required deps are missing.
+        """
+        bt = self._settings.backend_type
+        if bt == "qdrant":
+            from medha.backends.qdrant import QdrantBackend
+            return QdrantBackend(self._settings)
+        elif bt == "memory":
+            from medha.backends.memory import InMemoryBackend
+            return InMemoryBackend()
+        elif bt == "pgvector":
+            from medha.backends.pgvector import PgVectorBackend
+            return PgVectorBackend(self._settings)
+        else:
+            raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
     # --- Lifecycle ---
 

@@ -11,9 +11,11 @@ from medha.interfaces.storage import VectorStorageBackend
 from medha.l1_cache.memory import InMemoryL1Cache
 from medha.l1_cache.redis_adapter import RedisL1Cache
 from medha.logging import setup_logging
+from medha.backends.memory import InMemoryBackend
 
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
     "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",
     "VectorStorageBackend", "InMemoryL1Cache", "RedisL1Cache", "setup_logging",
+    "InMemoryBackend",
 ]

@@ -116,6 +116,10 @@ class VectorStorageBackend(ABC):
         """Release resources (close connections, etc.)."""
         ...
 
+    async def connect(self) -> None:
+        """Establish connection. No-op for backends that don't require it."""
+        pass
+
     # --- Context manager support ---
 
     async def __aenter__(self):

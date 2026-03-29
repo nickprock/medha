@@ -59,3 +59,30 @@ class TestSettings:
         s = Settings(score_threshold_fuzzy_prefilter=0.50, fuzzy_prefilter_top_k=100)
         assert s.score_threshold_fuzzy_prefilter == 0.50
         assert s.fuzzy_prefilter_top_k == 100
+
+
+class TestBackendTypeSettings:
+    def test_backend_type_default(self):
+        s = Settings()
+        assert s.backend_type == "qdrant"
+
+    def test_backend_type_memory(self):
+        s = Settings(backend_type="memory")
+        assert s.backend_type == "memory"
+
+    def test_backend_type_pgvector(self):
+        s = Settings(backend_type="pgvector")
+        assert s.backend_type == "pgvector"
+
+    def test_backend_type_invalid(self):
+        with pytest.raises(ValidationError):
+            Settings(backend_type="unknown")
+
+    def test_pg_pool_max_lt_min_raises(self):
+        with pytest.raises(ValidationError):
+            Settings(backend_type="pgvector", pg_pool_min_size=5, pg_pool_max_size=2)
+
+    def test_pg_dsn_overrides_fields(self):
+        # DSN è una stringa, non viene parsata — solo passata ad asyncpg
+        s = Settings(pg_dsn="postgresql://user:pass@host/db")
+        assert s.pg_dsn == "postgresql://user:pass@host/db"
