@@ -62,7 +62,9 @@ async def scenario_cold_start(
 ) -> dict:
     """Cold-start: no persistent cache, embeddings computed from scratch every time."""
     embedder = FastEmbedAdapter()
-    settings = Settings(qdrant_mode="memory")
+    # backend_type="memory" — pure-Python backend; this benchmark measures the
+    # embedding cache, not backend performance.
+    settings = Settings(backend_type="memory")
     medha = Medha("cold_start", embedder=embedder, settings=settings)
     await medha.start()
 
@@ -84,7 +86,7 @@ async def scenario_warm_start(
 ) -> dict:
     """Warm-start: embeddings loaded from disk before searching."""
     embedder = FastEmbedAdapter()
-    settings = Settings(qdrant_mode="memory", embedding_cache_path=cache_path)
+    settings = Settings(backend_type="memory", embedding_cache_path=cache_path)
     medha = Medha("warm_start", embedder=embedder, settings=settings)
     await medha.start()
 
@@ -98,7 +100,7 @@ async def scenario_warm_start(
     medha2 = Medha("warm_start", embedder=embedder, settings=settings)
     await medha2.start()
 
-    # Re-populate vector store (simulates a restart where Qdrant data was persisted)
+    # Re-populate vector store (simulates a restart where vector data was re-loaded)
     for entry in dataset:
         await medha2.store(entry["question"], entry["query"])
 
@@ -113,7 +115,7 @@ async def scenario_lru_hit(
 ) -> dict:
     """In-process LRU: search the same questions twice, measure second-pass latency."""
     embedder = FastEmbedAdapter()
-    settings = Settings(qdrant_mode="memory")
+    settings = Settings(backend_type="memory")
     medha = Medha("lru_hit", embedder=embedder, settings=settings)
     await medha.start()
 

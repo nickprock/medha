@@ -133,7 +133,9 @@ async def run_benchmark(
 
     # --- Setup Medha ---
     embedder = FastEmbedAdapter()
-    settings = Settings(qdrant_mode="memory")
+    # backend_type="memory" — pure-Python backend, no Qdrant needed.
+    # This benchmark measures LLM cost savings, not backend performance.
+    settings = Settings(backend_type="memory")
     medha = Medha("cost_bench", embedder=embedder, settings=settings)
     await medha.start()
 
