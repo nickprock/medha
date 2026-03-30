@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 from medha.config import Settings
@@ -244,6 +246,15 @@ class Medha:
         try:
             if not question or not question.strip():
                 logger.warning("Search called with empty question")
+                return CacheHit(strategy=SearchStrategy.ERROR)
+
+            # NEW: length guard
+            if len(question) > self._settings.max_question_length:
+                logger.warning(
+                    "Search rejected: question length %d exceeds max %d",
+                    len(question),
+                    self._settings.max_question_length,
+                )
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
             logger.debug("Search started for: '%s'", question[:80])
@@ -609,6 +620,11 @@ class Medha:
         if not question or not question.strip():
             logger.warning("Store skipped: question is empty or whitespace-only")
             return False
+        if len(question) > self._settings.max_question_length:
+            raise ValueError(
+                f"Question length {len(question)} exceeds max_question_length "
+                f"({self._settings.max_question_length})"
+            )
         if not generated_query or not generated_query.strip():
             logger.warning("Store skipped: generated_query is empty or whitespace-only")
             return False
@@ -758,6 +774,19 @@ class Medha:
 
     # --- Template Management ---
 
+    def _resolve_and_check_path(self, raw_path: str, label: str) -> Path:
+        """Resolve path and optionally enforce allowed_file_dir restriction."""
+        resolved = Path(raw_path).resolve()
+        if self._settings.allowed_file_dir is not None:
+            allowed = Path(self._settings.allowed_file_dir).resolve()
+            try:
+                resolved.relative_to(allowed)
+            except ValueError as err:
+                raise ValueError(
+                    f"{label}: path '{resolved}' is outside allowed_file_dir '{allowed}'"
+                ) from err
+        return resolved
+
     async def load_templates(self, templates: list[QueryTemplate]) -> None:
         """Load templates into memory and sync to the template collection.
 
@@ -780,11 +809,21 @@ class Medha:
             TemplateError: If the file cannot be read or parsed.
         """
         try:
-            with open(file_path, encoding="utf-8") as f:
+            resolved = self._resolve_and_check_path(file_path, "load_templates_from_file")
+            _max_bytes = self._settings.max_file_size_mb * 1024 * 1024
+            file_size = os.path.getsize(resolved)
+            if file_size > _max_bytes:
+                raise TemplateError(
+                    f"Template file '{resolved}' is {file_size / 1_048_576:.1f} MB, "
+                    f"exceeds max_file_size_mb={self._settings.max_file_size_mb}"
+                )
+            with open(resolved, encoding="utf-8") as f:
                 data = json.load(f)
             templates = [QueryTemplate(**item) for item in data]
             self._templates = templates
-            logger.info("Loaded %d templates from '%s'", len(templates), file_path)
+            logger.info("Loaded %d templates from '%s'", len(templates), resolved)
+        except TemplateError:
+            raise
         except Exception as e:
             raise TemplateError(
                 f"Failed to load templates from '{file_path}': {e}"
@@ -809,7 +848,15 @@ class Medha:
             MedhaError: If the file cannot be read or parsed.
         """
         try:
-            with open(path, encoding="utf-8") as f:
+            resolved = self._resolve_and_check_path(path, "warm_from_file")
+            _max_bytes = self._settings.max_file_size_mb * 1024 * 1024
+            file_size = os.path.getsize(resolved)
+            if file_size > _max_bytes:
+                raise MedhaError(
+                    f"warm_from_file: '{resolved}' is {file_size / 1_048_576:.1f} MB, "
+                    f"exceeds max_file_size_mb={self._settings.max_file_size_mb}"
+                )
+            with open(resolved, encoding="utf-8") as f:
                 content = f.read().strip()
 
             if content.startswith("["):
@@ -820,6 +867,8 @@ class Medha:
                     for line in content.splitlines()
                     if line.strip()
                 ]
+        except MedhaError:
+            raise
         except Exception as e:
             raise MedhaError(f"warm_from_file: cannot read '{path}': {e}") from e
 

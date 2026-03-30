@@ -1,9 +1,12 @@
 """Pydantic-based configuration with environment variable support (MEDHA_ prefix)."""
 
+import re
 from typing import Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
 
 
 class Settings(BaseSettings):
@@ -35,7 +38,7 @@ class Settings(BaseSettings):
     qdrant_host: str = Field(default="localhost", description="Qdrant host for docker/cloud mode")
     qdrant_port: int = Field(default=6333, ge=1, le=65535, description="Qdrant gRPC port")
     qdrant_url: str | None = Field(default=None, description="Full Qdrant URL (overrides host:port)")
-    qdrant_api_key: str | None = Field(default=None, description="Qdrant Cloud API key")
+    qdrant_api_key: SecretStr | None = Field(default=None, description="Qdrant Cloud API key")
 
     # --- Query language ---
     query_language: Literal["sql", "cypher", "graphql", "generic"] = Field(
@@ -152,6 +155,37 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- File operations ---
+    allowed_file_dir: str | None = Field(
+        default=None,
+        description=(
+            "If set, warm_from_file() and load_templates_from_file() will reject paths "
+            "outside this directory. Useful when the caller is not trusted. "
+            "Example: '/app/data'. Default: None (no restriction)."
+        ),
+    )
+    max_file_size_mb: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Maximum file size in MB for warm_from_file() and load_templates_from_file(). "
+            "Files exceeding this limit are rejected before reading."
+        ),
+    )
+
+    # --- Input validation ---
+    max_question_length: int = Field(
+        default=8192,
+        ge=64,
+        le=1_000_000,
+        description=(
+            "Maximum allowed length (characters) for a question string. "
+            "Questions exceeding this limit are rejected with SearchStrategy.ERROR "
+            "to prevent DoS via oversized inputs. Default: 8192 chars (~8KB)."
+        ),
+    )
+
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
@@ -166,6 +200,15 @@ class Settings(BaseSettings):
     )
 
     # --- Validators ---
+    @field_validator("pg_schema", "pg_table_prefix")
+    @classmethod
+    def validate_pg_identifier(cls, v: str) -> str:
+        if not _SAFE_IDENTIFIER_RE.match(v):
+            raise ValueError(
+                f"Invalid PostgreSQL identifier '{v}': must match ^[a-zA-Z_][a-zA-Z0-9_]{{0,62}}$"
+            )
+        return v
+
     @field_validator("pg_pool_max_size")
     @classmethod
     def pool_max_gte_min(cls, v: int, info: ValidationInfo) -> int:

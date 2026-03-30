@@ -463,7 +463,7 @@ class QdrantBackend(VectorStorageBackend):
             logger.debug("Qdrant Cloud URL: %s", self._settings.qdrant_url)
             return AsyncQdrantClient(
                 url=self._settings.qdrant_url,
-                api_key=self._settings.qdrant_api_key,
+                api_key=self._settings.qdrant_api_key.get_secret_value() if self._settings.qdrant_api_key else None,
             )
         else:
             raise StorageInitializationError(f"Unknown qdrant_mode: '{mode}'")
