@@ -84,7 +84,10 @@ pip install "medha-archai[gliner]"
 # Distributed L1 cache (Redis — for multi-instance deployments)
 pip install "medha-archai[redis]"
 
-# Everything
+# With pgvector backend
+pip install "medha-archai[pgvector]"
+
+# All optional dependencies
 pip install "medha-archai[all]"
 ```
 
@@ -136,6 +139,56 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+---
+
+## Choosing a Backend
+
+| Backend | Install | Persistence | Best For |
+|---------|---------|-------------|----------|
+| `qdrant` (default) | `pip install medha-archai` | Yes (Docker/Cloud) | Production, large datasets |
+| `memory` | `pip install medha-archai` | No | Testing, development, CI |
+| `pgvector` | `pip install medha-archai[pgvector]` | Yes (PostgreSQL) | Teams already using PostgreSQL |
+
+### InMemory Backend (zero dependencies)
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+embedder = FastEmbedAdapter()
+settings = Settings(backend_type="memory")
+
+async with Medha(collection_name="my_cache", embedder=embedder, settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+### PostgreSQL + pgvector Backend
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+embedder = FastEmbedAdapter()
+settings = Settings(
+    backend_type="pgvector",
+    pg_dsn="postgresql://user:password@localhost:5432/mydb",
+)
+
+async with Medha(collection_name="my_cache", embedder=embedder, settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+Or via environment variables:
+
+```bash
+export MEDHA_BACKEND_TYPE=pgvector
+export MEDHA_PG_DSN=postgresql://user:password@localhost:5432/mydb
 ```
 
 ---
