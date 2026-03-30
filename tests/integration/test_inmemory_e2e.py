@@ -1,6 +1,5 @@
 """End-to-end integration tests: MockEmbedder + InMemoryBackend + Medha pipeline."""
 
-import pytest
 
 from medha.backends.memory import InMemoryBackend
 from medha.config import Settings

@@ -1,6 +1,6 @@
 """Pydantic-based configuration with environment variable support (MEDHA_ prefix)."""
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     )
     qdrant_host: str = Field(default="localhost", description="Qdrant host for docker/cloud mode")
     qdrant_port: int = Field(default=6333, ge=1, le=65535, description="Qdrant gRPC port")
-    qdrant_url: Optional[str] = Field(default=None, description="Full Qdrant URL (overrides host:port)")
-    qdrant_api_key: Optional[str] = Field(default=None, description="Qdrant Cloud API key")
+    qdrant_url: str | None = Field(default=None, description="Full Qdrant URL (overrides host:port)")
+    qdrant_api_key: str | None = Field(default=None, description="Qdrant Cloud API key")
 
     # --- Query language ---
     query_language: Literal["sql", "cypher", "graphql", "generic"] = Field(
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     on_disk: bool = Field(default=False, description="Store vectors on disk (large datasets)")
 
     # --- PostgreSQL / pgvector ---
-    pg_dsn: Optional[str] = Field(
+    pg_dsn: str | None = Field(
         default=None,
         description=(
             "Full asyncpg DSN for PostgreSQL connection "
@@ -119,10 +119,13 @@ class Settings(BaseSettings):
         default=True,
         description="Re-score top results using original vectors after quantized search",
     )
-    quantization_oversampling: Optional[float] = Field(
+    quantization_oversampling: float | None = Field(
         default=None,
         ge=1.0,
-        description="Oversampling factor for quantized search (e.g. 2.0 fetches 2x candidates before re-scoring). None = Qdrant default",
+        description=(
+            "Oversampling factor for quantized search "
+            "(e.g. 2.0 fetches 2x candidates before re-scoring). None = Qdrant default"
+        ),
     )
     quantization_ignore: bool = Field(
         default=False,
@@ -130,14 +133,17 @@ class Settings(BaseSettings):
     )
     quantization_always_ram: bool = Field(
         default=True,
-        description="Keep quantized vectors in RAM. Combined with on_disk=True enables hybrid storage (original on disk, quantized in RAM)",
+        description=(
+            "Keep quantized vectors in RAM. Combined with on_disk=True enables "
+            "hybrid storage (original on disk, quantized in RAM)"
+        ),
     )
 
     # --- Template loading ---
-    template_file: Optional[str] = Field(default=None, description="Path to JSON template file")
+    template_file: str | None = Field(default=None, description="Path to JSON template file")
 
     # --- Persistent embedding cache ---
-    embedding_cache_path: Optional[str] = Field(
+    embedding_cache_path: str | None = Field(
         default=None,
         description=(
             "Path to a JSON file used to persist the embedding cache across restarts. "
@@ -150,7 +156,7 @@ class Settings(BaseSettings):
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
     # --- Timeouts ---
-    embedding_timeout: Optional[float] = Field(
+    embedding_timeout: float | None = Field(
         default=None,
         gt=0.0,
         description=(

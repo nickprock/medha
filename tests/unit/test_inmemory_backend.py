@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import uuid
-from typing import List, Optional
 
 import pytest
 
@@ -16,8 +15,8 @@ from medha.types import CacheEntry, CacheResult
 # ---------------------------------------------------------------------------
 
 def _make_entry(
-    id: Optional[str] = None,
-    vector: Optional[List[float]] = None,
+    id: str | None = None,
+    vector: list[float] | None = None,
     question: str = "test question",
     query: str = "SELECT 1",
     dim: int = 8,

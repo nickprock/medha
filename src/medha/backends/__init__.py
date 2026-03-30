@@ -1,6 +1,10 @@
 """Vector storage backend implementations."""
 
-from medha.backends.qdrant import QdrantBackend
 from medha.backends.memory import InMemoryBackend
+from medha.backends.qdrant import QdrantBackend
 
-__all__ = ["QdrantBackend", "InMemoryBackend"]
+try:
+    from medha.backends.pgvector import PgVectorBackend
+    __all__ = ["QdrantBackend", "InMemoryBackend", "PgVectorBackend"]
+except ImportError:
+    __all__ = ["QdrantBackend", "InMemoryBackend"]

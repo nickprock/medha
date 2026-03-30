@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Any
 
 try:
-    from openai import AsyncOpenAI, APIConnectionError, AuthenticationError, RateLimitError
+    from openai import APIConnectionError, AsyncOpenAI, AuthenticationError, RateLimitError
     _OPENAI_AVAILABLE = True
 except ImportError:
     _OPENAI_AVAILABLE = False
-    AsyncOpenAI = None  # type: ignore[assignment,misc]
-    APIConnectionError = Exception  # type: ignore[assignment,misc]
-    AuthenticationError = Exception  # type: ignore[assignment,misc]
-    RateLimitError = Exception  # type: ignore[assignment,misc]
+    AsyncOpenAI = None
+    APIConnectionError = Exception
+    AuthenticationError = Exception
+    RateLimitError = Exception
 
 from medha.exceptions import EmbeddingError
 from medha.interfaces.embedder import BaseEmbedder
@@ -72,7 +72,7 @@ class OpenAIAdapter(BaseEmbedder):
     def model_name(self) -> str:
         return self._model_name
 
-    async def aembed(self, text: str) -> List[float]:
+    async def aembed(self, text: str) -> list[float]:
         """Generate embedding via OpenAI API.
 
         Uses the async client for non-blocking operation.
@@ -83,12 +83,12 @@ class OpenAIAdapter(BaseEmbedder):
             )
         try:
             logger.debug("OpenAI aembed: text_len=%d, model='%s'", len(text), self._model_name)
-            kwargs = {"input": text, "model": self._model_name}
+            kwargs: dict[str, Any] = {"input": text, "model": self._model_name}
             if self._dimensions is not None:
                 kwargs["dimensions"] = self._dimensions
             response = await self._client.embeddings.create(**kwargs)
             logger.debug("OpenAI aembed: done, dim=%d", len(response.data[0].embedding))
-            return response.data[0].embedding
+            return list(response.data[0].embedding)
         except AuthenticationError as e:
             logger.error("OpenAI authentication failed: %s", e)
             raise EmbeddingError(
@@ -110,7 +110,7 @@ class OpenAIAdapter(BaseEmbedder):
                 f"Failed to embed text with OpenAI model '{self._model_name}': {e}"
             ) from e
 
-    async def aembed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a batch via OpenAI API.
 
         OpenAI's API natively supports batched input.
@@ -122,7 +122,7 @@ class OpenAIAdapter(BaseEmbedder):
             )
         try:
             logger.debug("OpenAI aembed_batch: %d texts, model='%s'", len(texts), self._model_name)
-            kwargs = {"input": texts, "model": self._model_name}
+            kwargs: dict[str, Any] = {"input": texts, "model": self._model_name}
             if self._dimensions is not None:
                 kwargs["dimensions"] = self._dimensions
             response = await self._client.embeddings.create(**kwargs)

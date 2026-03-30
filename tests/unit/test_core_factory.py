@@ -1,6 +1,5 @@
 """Unit tests for Medha._build_backend factory."""
 
-from unittest.mock import patch
 
 import pytest
 
@@ -43,7 +42,7 @@ class TestBuildBackend:
 
     def test_factory_pgvector_backend(self, mock_embedder):
         """backend_type='pgvector' instantiates PgVectorBackend (import tested, not connect)."""
-        asyncpg = pytest.importorskip("asyncpg")
+        pytest.importorskip("asyncpg")
         from medha.backends.pgvector import PgVectorBackend
 
         settings = Settings(backend_type="pgvector")

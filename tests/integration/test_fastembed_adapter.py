@@ -39,5 +39,5 @@ class TestFastEmbedAdapter:
         v1 = await adapter.aembed("apples and oranges")
         v2 = await adapter.aembed("database schema design")
         # Cosine similarity should be low for unrelated texts
-        dot = sum(a * b for a, b in zip(v1, v2))
+        dot = sum(a * b for a, b in zip(v1, v2, strict=False))
         assert dot < 0.8

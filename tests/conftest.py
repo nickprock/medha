@@ -2,7 +2,6 @@
 
 import hashlib
 import uuid
-from typing import List, Optional
 
 import pytest
 
@@ -32,7 +31,7 @@ class MockEmbedder(BaseEmbedder):
     def model_name(self) -> str:
         return self._model_name
 
-    async def aembed(self, text: str) -> List[float]:
+    async def aembed(self, text: str) -> list[float]:
         """Generate a deterministic embedding from text hash."""
         h = hashlib.sha256(text.lower().encode()).hexdigest()
         # Expand hash to fill dimension
@@ -44,7 +43,7 @@ class MockEmbedder(BaseEmbedder):
         magnitude = sum(v**2 for v in values) ** 0.5
         return [v / magnitude for v in values] if magnitude > 0 else values
 
-    async def aembed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         return [await self.aembed(t) for t in texts]
 
 
@@ -114,9 +113,48 @@ async def inmemory_backend():
     await b.close()
 
 
+@pytest.fixture
+def test_settings_pgvector():
+    """Settings con backend_type=pgvector. Richiede PG reale."""
+    import os
+    return Settings(
+        backend_type="pgvector",
+        pg_dsn=os.environ.get(
+            "MEDHA_TEST_PG_DSN",
+            "postgresql://postgres:postgres@localhost:5432/medha_test",
+        ),
+        score_threshold_exact=0.99,
+        score_threshold_semantic=0.85,
+        score_threshold_template=0.80,
+        score_threshold_fuzzy=80.0,
+        l1_cache_max_size=100,
+    )
+
+
+@pytest.fixture(params=["memory"])
+async def any_backend(request):
+    """Parametrizzato su tutti i backend testabili senza servizi esterni."""
+    if request.param == "memory":
+        from medha.backends.memory import InMemoryBackend
+        b = InMemoryBackend()
+        await b.connect()
+        yield b
+        await b.close()
+
+
+@pytest.fixture
+async def pgvector_backend(test_settings_pgvector):
+    pytest.importorskip("asyncpg")  # skip if not installed
+    from medha.backends.pgvector import PgVectorBackend
+    b = PgVectorBackend(test_settings_pgvector)
+    await b.connect()
+    yield b
+    await b.close()
+
+
 def make_entry(
-    id: Optional[str] = None,
-    vector: Optional[List[float]] = None,
+    id: str | None = None,
+    vector: list[float] | None = None,
     question: str = "test question",
     query: str = "SELECT 1",
     dim: int = 8,

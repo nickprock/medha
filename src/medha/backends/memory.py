@@ -1,9 +1,10 @@
 """InMemoryBackend — zero-external-deps vector storage backend."""
 
 import asyncio
+import contextlib
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
 from medha.exceptions import StorageError
 from medha.interfaces.storage import VectorStorageBackend
@@ -24,9 +25,9 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
             return 0.0
         return float(np.dot(va, vb) / denom)
     except ImportError:
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
+        dot: float = sum(x * y for x, y in zip(a, b, strict=False))
+        norm_a: float = sum(x * x for x in a) ** 0.5
+        norm_b: float = sum(x * x for x in b) ** 0.5
         if norm_a == 0.0 or norm_b == 0.0:
             return 0.0
         return dot / (norm_a * norm_b)
@@ -43,7 +44,7 @@ class InMemoryBackend(VectorStorageBackend):
     async def connect(self) -> None:
         """No-op — backend is always connected."""
 
-    async def initialize(self, collection_name: str, dimension: int, **kwargs) -> None:
+    async def initialize(self, collection_name: str, dimension: int, **kwargs: Any) -> None:
         if dimension <= 0:
             raise StorageError(f"dimension must be > 0, got {dimension}")
         async with self._lock:
@@ -105,9 +106,9 @@ class InMemoryBackend(VectorStorageBackend):
         self,
         collection_name: str,
         limit: int = 100,
-        offset: Optional[str] = None,
+        offset: str | None = None,
         with_vectors: bool = False,
-    ) -> tuple[list[CacheResult], Optional[str]]:
+    ) -> tuple[list[CacheResult], str | None]:
         if collection_name not in self._store:
             raise StorageError(f"Collection '{collection_name}' does not exist.")
 
@@ -139,7 +140,7 @@ class InMemoryBackend(VectorStorageBackend):
 
     async def search_by_query_hash(
         self, collection_name: str, query_hash: str
-    ) -> Optional[CacheResult]:
+    ) -> CacheResult | None:
         if collection_name not in self._store:
             raise StorageError(f"Collection '{collection_name}' does not exist.")
 
@@ -164,12 +165,10 @@ class InMemoryBackend(VectorStorageBackend):
 def _point_to_cache_result(point: dict[str, Any], score: float) -> CacheResult:
     payload = point["payload"]
     created_at_raw = payload.get("created_at")
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
     if created_at_raw:
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             created_at = datetime.fromisoformat(created_at_raw)
-        except (ValueError, TypeError):
-            pass
     return CacheResult(
         id=point["id"],
         score=max(0.0, min(1.0, score)),
