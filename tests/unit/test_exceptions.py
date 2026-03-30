@@ -3,13 +3,13 @@
 import pytest
 
 from medha.exceptions import (
-    MedhaError,
     ConfigurationError,
     EmbeddingError,
+    MedhaError,
+    ParameterExtractionError,
     StorageError,
     StorageInitializationError,
     TemplateError,
-    ParameterExtractionError,
 )
 
 

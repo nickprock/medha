@@ -17,8 +17,6 @@ Usage::
 
 import logging
 import sys
-from typing import Optional
-
 
 LIBRARY_LOGGER_NAME = "medha"
 
@@ -28,10 +26,10 @@ _DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def setup_logging(
     level: str = "INFO",
-    log_file: Optional[str] = None,
-    console_level: Optional[str] = None,
-    fmt: Optional[str] = None,
-    date_fmt: Optional[str] = None,
+    log_file: str | None = None,
+    console_level: str | None = None,
+    fmt: str | None = None,
+    date_fmt: str | None = None,
 ) -> logging.Logger:
     """Configure the ``medha`` logger hierarchy.
 

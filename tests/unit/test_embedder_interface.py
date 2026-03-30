@@ -3,7 +3,6 @@
 import pytest
 
 from medha.interfaces.embedder import BaseEmbedder
-from tests.conftest import MockEmbedder
 
 
 class TestBaseEmbedderABC:
@@ -144,13 +143,8 @@ class TestFastEmbedAdapterErrors:
         from medha.exceptions import EmbeddingError
         instance = self._uninitialized()
         instance._dimension = None
-        try:
+        with pytest.raises(EmbeddingError):
             _ = instance.dimension
-            assert False, "Expected EmbeddingError"
-        except EmbeddingError:
-            pass
-        except AssertionError:
-            pytest.fail("dimension raised AssertionError instead of EmbeddingError")
 
 
 class TestOpenAIAdapterErrors:

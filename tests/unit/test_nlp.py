@@ -1,11 +1,12 @@
 """Unit tests for medha.utils.nlp."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from medha.exceptions import ParameterExtractionError
 from medha.types import QueryTemplate
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
-from medha.exceptions import ParameterExtractionError
 
 
 @pytest.fixture
@@ -167,7 +168,6 @@ class TestEntityCache:
         call_count = 0
         original_findall = __import__("re").findall
 
-        import re
 
         def counting_findall(pattern, string, *args, **kwargs):
             nonlocal call_count
@@ -180,7 +180,6 @@ class TestEntityCache:
 
         try:
             extractor.extract_entities("find 5 users")
-            calls_after_first = call_count
             call_count = 0
             extractor.extract_entities("find 5 users")  # should hit cache
             assert call_count == 0, "Cache miss: re.findall was called on repeated input"

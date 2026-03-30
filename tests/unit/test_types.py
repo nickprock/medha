@@ -1,10 +1,11 @@
 """Unit tests for medha.types data models."""
 
-import pytest
 from datetime import datetime, timezone
+
+import pytest
 from pydantic import ValidationError
 
-from medha.types import CacheHit, CacheEntry, CacheResult, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheHit, QueryTemplate, SearchStrategy
 
 
 class TestCacheHit:

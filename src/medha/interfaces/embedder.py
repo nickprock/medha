@@ -1,8 +1,9 @@
 """BaseEmbedder abstract class defining the embedder interface."""
 
-from abc import ABC, abstractmethod
-from typing import Any, Coroutine, List, TypeVar
 import asyncio
+from abc import ABC, abstractmethod
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 _T = TypeVar("_T")
 
@@ -23,7 +24,7 @@ class BaseEmbedder(ABC):
         ...
 
     @abstractmethod
-    async def aembed(self, text: str) -> List[float]:
+    async def aembed(self, text: str) -> list[float]:
         """Generate an embedding for a single text string.
 
         Args:
@@ -38,7 +39,7 @@ class BaseEmbedder(ABC):
         ...
 
     @abstractmethod
-    async def aembed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Args:
@@ -55,11 +56,11 @@ class BaseEmbedder(ABC):
 
     # --- Sync convenience wrappers ---
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         """Synchronous wrapper for aembed."""
         return self._run_sync(self.aembed(text))
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Synchronous wrapper for aembed_batch."""
         return self._run_sync(self.aembed_batch(texts))
 

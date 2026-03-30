@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-import hashlib
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_REPLACEMENTS: List[Tuple[str, str]] = [
+_DEFAULT_REPLACEMENTS: list[tuple[str, str]] = [
     (r"\bfirst\s+(\d+)\b", r"top \1"),
     # Longer phrases first to avoid partial matches (same principle as
     # "list all the" before "list all").
@@ -32,7 +31,7 @@ _DEFAULT_REPLACEMENTS: List[Tuple[str, str]] = [
 
 def normalize_question(
     question: str,
-    extra_replacements: List[Tuple[str, str]] | None = None,
+    extra_replacements: list[tuple[str, str]] | None = None,
 ) -> str:
     """Normalize a natural-language question into canonical form.
 

@@ -1,9 +1,12 @@
 """Pydantic-based configuration with environment variable support (MEDHA_ prefix)."""
 
-from typing import Literal, Optional
+import re
+from typing import Literal
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
 
 
 class Settings(BaseSettings):
@@ -16,6 +19,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Backend selection ---
+    backend_type: Literal["qdrant", "memory", "pgvector"] = Field(
+        default="qdrant",
+        description=(
+            "Vector storage backend to use. "
+            "'qdrant' requires qdrant-client (default). "
+            "'memory' uses pure Python in-process storage, zero external deps. "
+            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector])."
+        ),
+    )
+
     # --- Backend ---
     qdrant_mode: Literal["memory", "docker", "cloud"] = Field(
         default="memory",
@@ -23,8 +37,8 @@ class Settings(BaseSettings):
     )
     qdrant_host: str = Field(default="localhost", description="Qdrant host for docker/cloud mode")
     qdrant_port: int = Field(default=6333, ge=1, le=65535, description="Qdrant gRPC port")
-    qdrant_url: Optional[str] = Field(default=None, description="Full Qdrant URL (overrides host:port)")
-    qdrant_api_key: Optional[str] = Field(default=None, description="Qdrant Cloud API key")
+    qdrant_url: str | None = Field(default=None, description="Full Qdrant URL (overrides host:port)")
+    qdrant_api_key: SecretStr | None = Field(default=None, description="Qdrant Cloud API key")
 
     # --- Query language ---
     query_language: Literal["sql", "cypher", "graphql", "generic"] = Field(
@@ -81,15 +95,40 @@ class Settings(BaseSettings):
     )
     on_disk: bool = Field(default=False, description="Store vectors on disk (large datasets)")
 
+    # --- PostgreSQL / pgvector ---
+    pg_dsn: str | None = Field(
+        default=None,
+        description=(
+            "Full asyncpg DSN for PostgreSQL connection "
+            "(e.g. 'postgresql://user:pass@localhost:5432/dbname'). "
+            "When set, overrides pg_host, pg_port, pg_database, pg_user, pg_password."
+        ),
+    )
+    pg_host: str = Field(default="localhost", description="PostgreSQL host")
+    pg_port: int = Field(default=5432, ge=1, le=65535, description="PostgreSQL port")
+    pg_database: str = Field(default="medha", description="PostgreSQL database name")
+    pg_user: str = Field(default="postgres", description="PostgreSQL user")
+    pg_password: SecretStr = Field(default=SecretStr(""), description="PostgreSQL password")
+    pg_schema: str = Field(default="public", description="PostgreSQL schema for Medha tables")
+    pg_table_prefix: str = Field(
+        default="medha",
+        description="Prefix for Medha table names (e.g. 'medha' → table 'medha_my_cache')",
+    )
+    pg_pool_min_size: int = Field(default=2, ge=1, description="Min connections in asyncpg pool")
+    pg_pool_max_size: int = Field(default=10, ge=1, description="Max connections in asyncpg pool")
+
     # --- Quantization search ---
     quantization_rescore: bool = Field(
         default=True,
         description="Re-score top results using original vectors after quantized search",
     )
-    quantization_oversampling: Optional[float] = Field(
+    quantization_oversampling: float | None = Field(
         default=None,
         ge=1.0,
-        description="Oversampling factor for quantized search (e.g. 2.0 fetches 2x candidates before re-scoring). None = Qdrant default",
+        description=(
+            "Oversampling factor for quantized search "
+            "(e.g. 2.0 fetches 2x candidates before re-scoring). None = Qdrant default"
+        ),
     )
     quantization_ignore: bool = Field(
         default=False,
@@ -97,14 +136,17 @@ class Settings(BaseSettings):
     )
     quantization_always_ram: bool = Field(
         default=True,
-        description="Keep quantized vectors in RAM. Combined with on_disk=True enables hybrid storage (original on disk, quantized in RAM)",
+        description=(
+            "Keep quantized vectors in RAM. Combined with on_disk=True enables "
+            "hybrid storage (original on disk, quantized in RAM)"
+        ),
     )
 
     # --- Template loading ---
-    template_file: Optional[str] = Field(default=None, description="Path to JSON template file")
+    template_file: str | None = Field(default=None, description="Path to JSON template file")
 
     # --- Persistent embedding cache ---
-    embedding_cache_path: Optional[str] = Field(
+    embedding_cache_path: str | None = Field(
         default=None,
         description=(
             "Path to a JSON file used to persist the embedding cache across restarts. "
@@ -113,11 +155,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- File operations ---
+    allowed_file_dir: str | None = Field(
+        default=None,
+        description=(
+            "If set, warm_from_file() and load_templates_from_file() will reject paths "
+            "outside this directory. Useful when the caller is not trusted. "
+            "Example: '/app/data'. Default: None (no restriction)."
+        ),
+    )
+    max_file_size_mb: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Maximum file size in MB for warm_from_file() and load_templates_from_file(). "
+            "Files exceeding this limit are rejected before reading."
+        ),
+    )
+
+    # --- Input validation ---
+    max_question_length: int = Field(
+        default=8192,
+        ge=64,
+        le=1_000_000,
+        description=(
+            "Maximum allowed length (characters) for a question string. "
+            "Questions exceeding this limit are rejected with SearchStrategy.ERROR "
+            "to prevent DoS via oversized inputs. Default: 8192 chars (~8KB)."
+        ),
+    )
+
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
     # --- Timeouts ---
-    embedding_timeout: Optional[float] = Field(
+    embedding_timeout: float | None = Field(
         default=None,
         gt=0.0,
         description=(
@@ -127,6 +200,25 @@ class Settings(BaseSettings):
     )
 
     # --- Validators ---
+    @field_validator("pg_schema", "pg_table_prefix")
+    @classmethod
+    def validate_pg_identifier(cls, v: str) -> str:
+        if not _SAFE_IDENTIFIER_RE.match(v):
+            raise ValueError(
+                f"Invalid PostgreSQL identifier '{v}': must match ^[a-zA-Z_][a-zA-Z0-9_]{{0,62}}$"
+            )
+        return v
+
+    @field_validator("pg_pool_max_size")
+    @classmethod
+    def pool_max_gte_min(cls, v: int, info: ValidationInfo) -> int:
+        min_size = info.data.get("pg_pool_min_size", 2)
+        if v < min_size:
+            raise ValueError(
+                f"pg_pool_max_size ({v}) must be >= pg_pool_min_size ({min_size})"
+            )
+        return v
+
     @field_validator("score_threshold_exact")
     @classmethod
     def exact_must_be_high(cls, v: float) -> float:

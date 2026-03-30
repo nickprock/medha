@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,14 +26,14 @@ class CacheHit(BaseModel):
     generated_query: str = Field(
         default="", description="The SQL/Cypher/GraphQL query string"
     )
-    response_summary: Optional[str] = Field(
+    response_summary: str | None = Field(
         default=None, description="Optional cached response/summary"
     )
     confidence: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Match confidence score"
     )
     strategy: SearchStrategy = Field(default=SearchStrategy.NO_MATCH)
-    template_used: Optional[str] = Field(
+    template_used: str | None = Field(
         default=None, description="Template intent if matched via template"
     )
 
@@ -49,14 +48,14 @@ class QueryTemplate(BaseModel):
     query_template: str = Field(
         description="Query with placeholders, e.g. 'SELECT * FROM {entity} LIMIT {count}'"
     )
-    parameters: List[str] = Field(
+    parameters: list[str] = Field(
         default_factory=list, description="List of parameter names"
     )
     priority: int = Field(default=1, ge=1, le=5, description="Priority (1=highest)")
-    aliases: List[str] = Field(
+    aliases: list[str] = Field(
         default_factory=list, description="Alternative phrasings"
     )
-    parameter_patterns: Dict[str, str] = Field(
+    parameter_patterns: dict[str, str] = Field(
         default_factory=dict,
         description="Regex patterns per parameter for extraction",
     )
@@ -66,7 +65,7 @@ class CacheEntry(BaseModel):
     """A single cache entry to be stored in the vector backend."""
 
     id: str = Field(description="Unique identifier (UUID)")
-    vector: List[float] = Field(description="Embedding vector")
+    vector: list[float] = Field(description="Embedding vector")
     original_question: str
     normalized_question: str
     generated_query: str = Field(
@@ -75,8 +74,8 @@ class CacheEntry(BaseModel):
     query_hash: str = Field(
         description="MD5 hash of generated_query for deduplication"
     )
-    response_summary: Optional[str] = None
-    template_id: Optional[str] = Field(
+    response_summary: str | None = None
+    template_id: str | None = Field(
         default=None, description="Template intent if generated via template"
     )
     usage_count: int = Field(default=1, ge=0)
@@ -94,7 +93,7 @@ class CacheResult(BaseModel):
     normalized_question: str
     generated_query: str
     query_hash: str
-    response_summary: Optional[str] = None
-    template_id: Optional[str] = None
+    response_summary: str | None = None
+    template_id: str | None = None
     usage_count: int = Field(default=0)
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None

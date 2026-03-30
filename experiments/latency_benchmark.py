@@ -8,9 +8,14 @@ Measures:
 
 At configurable collection sizes (default: 100, 1000, 10000).
 
+Backend options:
+    --backend qdrant   QdrantBackend with HNSW (default, recommended for n > 10k)
+    --backend memory   InMemoryBackend with linear scan (no Qdrant needed, good for n < 10k)
+
 Usage:
     python experiments/latency_benchmark.py --sizes 100,1000,10000
     python experiments/latency_benchmark.py --sizes 100,500 --num-queries 50 --output latency_report.json
+    python experiments/latency_benchmark.py --sizes 100,500 --backend memory
 """
 
 import asyncio
@@ -184,8 +189,17 @@ async def benchmark(
     collection_sizes: list[int],
     num_queries: int = 100,
     seed: int | None = None,
+    backend: str = "qdrant",
 ) -> dict:
-    """Run the latency benchmark across collection sizes."""
+    """Run the latency benchmark across collection sizes.
+
+    Args:
+        collection_sizes: Collection sizes to benchmark.
+        num_queries: Number of queries per tier.
+        seed: Random seed for reproducibility.
+        backend: "qdrant" (HNSW, recommended for n > 10k) or "memory"
+                 (linear scan, useful for comparing at small n).
+    """
     if seed is not None:
         random.seed(seed)
 
@@ -193,12 +207,18 @@ async def benchmark(
 
     for size in collection_sizes:
         print(f"\n{'='*50}")
-        print(f"Collection size: {size}")
+        print(f"Collection size: {size}  (backend={backend})")
         print(f"{'='*50}")
 
         # --- Setup ---
         embedder = FastEmbedAdapter()
-        settings = Settings(qdrant_mode="memory")
+        if backend == "memory":
+            # Pure-Python InMemoryBackend: linear O(n) cosine scan.
+            # Fast for small collections; compare with "qdrant" at large n.
+            settings = Settings(backend_type="memory")
+        else:
+            # QdrantBackend (default): HNSW O(log n), supports quantization.
+            settings = Settings(backend_type="qdrant", qdrant_mode="memory")
         medha = Medha(f"bench_{size}", embedder=embedder, settings=settings)
         await medha.start()
 
@@ -279,15 +299,27 @@ def main():
         default=None,
         help="Output JSON file path (prints to stdout if omitted)",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="qdrant",
+        choices=["qdrant", "memory"],
+        help=(
+            "Vector backend to use: 'qdrant' (HNSW, default) or 'memory' "
+            "(linear scan, no Qdrant required). Use 'memory' to benchmark "
+            "InMemoryBackend or to run without infrastructure."
+        ),
+    )
     args = parser.parse_args()
 
     sizes = [int(s.strip()) for s in args.sizes.split(",")]
 
     print("Medha Latency Benchmark")
-    print(f"  Sizes: {sizes}")
+    print(f"  Sizes:            {sizes}")
     print(f"  Queries per tier: {args.num_queries}")
+    print(f"  Backend:          {args.backend}")
 
-    results = asyncio.run(benchmark(sizes, args.num_queries, args.seed))
+    results = asyncio.run(benchmark(sizes, args.num_queries, args.seed, args.backend))
 
     print(f"\n{'='*50}")
     print("Results Summary")

@@ -3,15 +3,17 @@
 Lazy imports to avoid pulling in optional dependencies at package level.
 """
 
+from medha.interfaces.embedder import BaseEmbedder
 
-def get_fastembed_adapter():
+
+def get_fastembed_adapter() -> type[BaseEmbedder]:
     """Import and return the FastEmbedAdapter class."""
     from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
     return FastEmbedAdapter
 
 
-def get_openai_adapter():
+def get_openai_adapter() -> type[BaseEmbedder]:
     """Import and return the OpenAIAdapter class."""
     from medha.embeddings.openai_adapter import OpenAIAdapter
 

@@ -14,7 +14,6 @@ from medha.types import SearchStrategy
 from tests.conftest import MockEmbedder
 from tests.unit.test_core_waterfall import MockBackend
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -524,6 +523,7 @@ class TestTemplateSyncPartialFailure:
     async def test_batch_embed_failure_logs_error(self, settings, caplog):
         """If aembed_batch() raises, an ERROR is logged and no templates are synced."""
         import logging
+
         from medha.types import QueryTemplate
 
         class BatchFailEmbedder(MockEmbedder):
@@ -555,6 +555,7 @@ class TestTemplateSyncPartialFailure:
     async def test_all_embed_failures_logs_error(self, settings, caplog):
         """If aembed_batch() always fails, an ERROR is logged and sync is aborted."""
         import logging
+
         from medha.types import QueryTemplate
 
         class AlwaysFailEmbedder(MockEmbedder):
