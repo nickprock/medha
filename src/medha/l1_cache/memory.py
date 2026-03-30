@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from typing import Optional
 
 from medha.interfaces.l1_cache import L1CacheBackend
 from medha.types import CacheHit
@@ -25,7 +24,7 @@ class InMemoryL1Cache(L1CacheBackend):
         self._cache: OrderedDict[str, CacheHit] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    async def get(self, key: str) -> Optional[CacheHit]:
+    async def get(self, key: str) -> CacheHit | None:
         async with self._lock:
             if key in self._cache:
                 hit = self._cache.pop(key)

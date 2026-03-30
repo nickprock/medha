@@ -1,12 +1,11 @@
 """NLP utilities: parameter extraction and keyword overlap scoring."""
 
-import re
 import logging
-from typing import Dict, List
+import re
 from collections import defaultdict
 
-from medha.types import QueryTemplate
 from medha.exceptions import ParameterExtractionError
+from medha.types import QueryTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ class ParameterExtractor:
         self._gliner_available = False
         # Cache entity extraction results: same question is parsed once
         # even when matched against many templates in the same search call.
-        self._entity_cache: Dict[str, Dict[str, List[str]]] = {}
+        self._entity_cache: dict[str, dict[str, list[str]]] = {}
 
         if use_spacy:
             self._try_load_spacy()
@@ -63,7 +62,7 @@ class ParameterExtractor:
         """Whether GLiNER zero-shot NER is available."""
         return self._gliner_available
 
-    def extract(self, question: str, template: QueryTemplate) -> Dict[str, str]:
+    def extract(self, question: str, template: QueryTemplate) -> dict[str, str]:
         """Extract all parameters for a template from a question.
 
         Cascading strategy:
@@ -151,7 +150,7 @@ class ParameterExtractor:
             f"Could not extract parameters {missing} from: {question!r}"
         )
 
-    def extract_entities(self, text: str) -> Dict[str, List[str]]:
+    def extract_entities(self, text: str) -> dict[str, list[str]]:
         """Extract named entities using spaCy + regex fallback.
 
         Results are cached per text: the same question is parsed only once
@@ -170,7 +169,7 @@ class ParameterExtractor:
             logger.debug("Entity cache HIT for text len=%d", len(text))
             return self._entity_cache[text]
 
-        entities: Dict[str, List[str]] = defaultdict(list)
+        entities: dict[str, list[str]] = defaultdict(list)
 
         if self._spacy_available and self._nlp is not None:
             doc = self._nlp(text)
@@ -197,7 +196,7 @@ class ParameterExtractor:
         return result
 
     def render_query(
-        self, template: QueryTemplate, parameters: Dict[str, str]
+        self, template: QueryTemplate, parameters: dict[str, str]
     ) -> str:
         """Inject parameters into a query template.
 
@@ -271,7 +270,7 @@ class ParameterExtractor:
 
     def _extract_via_gliner(
         self, question: str, template: QueryTemplate
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Extract parameters using GLiNER zero-shot NER.
 
         Uses ``template.parameters`` directly as entity labels, so no hardcoded
@@ -287,7 +286,7 @@ class ParameterExtractor:
             logger.warning("GLiNER prediction failed: %s", exc)
             return {}
 
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
         for entity in entities:
             label: str = entity["label"]
             if label in template.parameters and label not in params:
@@ -297,9 +296,9 @@ class ParameterExtractor:
 
     def _extract_via_regex(
         self, question: str, template: QueryTemplate
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Extract parameters using template-defined regex patterns."""
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
         if not template.parameter_patterns:
             return params
 
@@ -313,10 +312,10 @@ class ParameterExtractor:
 
     def _extract_via_spacy(
         self, question: str, template: QueryTemplate
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Extract parameters using spaCy NER."""
         entities = self.extract_entities(question)
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
 
         for param in template.parameters:
             if param in ("count", "number") and "number" in entities:
@@ -336,9 +335,9 @@ class ParameterExtractor:
 
     def _extract_via_heuristics(
         self, question: str, template: QueryTemplate
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Fallback: extract numbers and capitalized words."""
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
         numbers = re.findall(r"\b\d+\b", question)
         capitalized = re.findall(r"\b[A-Z][a-zA-Z]+\b", question)
 

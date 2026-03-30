@@ -85,7 +85,9 @@ async def run_in_memory_scenario(
     results = {}
     for label, workload in workloads.items():
         embedder = FastEmbedAdapter()
-        settings = Settings(qdrant_mode="memory", l1_cache_max_size=max_size)
+        # backend_type="memory" — pure-Python vector backend; this benchmark
+        # measures L1 cache behaviour, not the vector backend performance.
+        settings = Settings(backend_type="memory", l1_cache_max_size=max_size)
         l1 = InMemoryL1Cache(max_size=max_size)
         medha = Medha("in_memory_bench", embedder=embedder, settings=settings, l1_backend=l1)
         await medha.start()
@@ -126,7 +128,7 @@ async def run_redis_scenario(
     results = {}
     for label, workload in workloads.items():
         embedder = FastEmbedAdapter()
-        settings = Settings(qdrant_mode="memory")
+        settings = Settings(backend_type="memory")
         l1 = RedisL1Cache(url=redis_url, prefix=f"medha:bench:{label}", ttl=ttl)
         medha = Medha("redis_bench", embedder=embedder, settings=settings, l1_backend=l1)
         await medha.start()

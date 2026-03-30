@@ -153,8 +153,10 @@ async def run_sweep(
                   end="", flush=True)
 
             embedder = FastEmbedAdapter()
+            # backend_type="memory" — pure cosine similarity, no HNSW approximation.
+            # Results are exact and reproducible across runs.
             settings = Settings(
-                qdrant_mode="memory",
+                backend_type="memory",
                 score_threshold_exact=exact_t,
                 score_threshold_semantic=semantic_t,
             )

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medha-archai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Semantic Memory for AI Text-to-Query systems"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["semantic-cache", "llm", "text-to-sql", "text-to-cypher", "vector-search"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -47,7 +47,12 @@ fuzzy = ["rapidfuzz>=3.0,<4"]
 redis = ["redis[asyncio]>=5.0,<6"]
 
 # All optional providers
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis]"]
+pgvector = [
+    "asyncpg>=0.29,<1",
+    "pgvector>=0.3,<1",
+]
+
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,pgvector]"]
 
 # Development
 dev = [
@@ -73,6 +78,10 @@ packages = ["src/medha"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+markers = [
+    "slow: tests that require heavy models or real embedders",
+    "pgvector: tests that require a running PostgreSQL with pgvector extension",
+]
 
 [tool.ruff]
 target-version = "py310"
@@ -81,6 +90,15 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+# TC001/TC003: imports ARE needed at runtime (Pydantic models, ABC signatures, isinstance)
+# B017: broad pytest.raises(Exception) is intentional in hierarchy tests
+ignore = ["TC001", "TC003"]
+
+[tool.ruff.lint.per-file-ignores]
+# E402: imports after pytest.importorskip are intentional
+# A002: `id` arg in test helpers is conventional and clear in context
+# B017: broad Exception in hierarchy tests is intentional
+"tests/**" = ["E402", "A002", "B017"]
 
 [tool.coverage.run]
 source = ["medha"]
@@ -95,3 +113,26 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "spacy",
+    "spacy.*",
+    "gliner",
+    "gliner.*",
+    "openai",
+    "openai.*",
+    "fastembed",
+    "fastembed.*",
+    "rapidfuzz",
+    "rapidfuzz.*",
+    "asyncpg",
+    "asyncpg.*",
+    "pgvector",
+    "pgvector.*",
+    "redis",
+    "redis.*",
+    "numpy",
+    "numpy.*",
+]
+ignore_missing_imports = true

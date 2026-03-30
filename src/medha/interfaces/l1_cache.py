@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from medha.types import CacheHit
 
@@ -19,7 +18,7 @@ class L1CacheBackend(ABC):
     """
 
     @abstractmethod
-    async def get(self, key: str) -> Optional[CacheHit]:
+    async def get(self, key: str) -> CacheHit | None:
         """Return the cached hit for *key*, or ``None`` on a miss."""
         ...
 
@@ -38,3 +37,7 @@ class L1CacheBackend(ABC):
     def size(self) -> int:
         """Current number of entries.  May be approximate for distributed backends."""
         ...
+
+    async def close(self) -> None:
+        """Release any resources held by this backend. No-op by default."""
+        return

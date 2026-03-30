@@ -1,6 +1,6 @@
 """Unit tests for medha.utils.normalization."""
 
-from medha.utils.normalization import normalize_question, question_hash, query_hash
+from medha.utils.normalization import normalize_question, query_hash, question_hash
 
 
 class TestNormalizeQuestion:

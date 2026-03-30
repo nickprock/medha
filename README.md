@@ -84,7 +84,10 @@ pip install "medha-archai[gliner]"
 # Distributed L1 cache (Redis — for multi-instance deployments)
 pip install "medha-archai[redis]"
 
-# Everything
+# With pgvector backend
+pip install "medha-archai[pgvector]"
+
+# All optional dependencies
 pip install "medha-archai[all]"
 ```
 
@@ -140,13 +143,63 @@ if __name__ == "__main__":
 
 ---
 
+## Choosing a Backend
+
+| Backend | Install | Persistence | Best For |
+|---------|---------|-------------|----------|
+| `qdrant` (default) | `pip install medha-archai` | Yes (Docker/Cloud) | Production, large datasets |
+| `memory` | `pip install medha-archai` | No | Testing, development, CI |
+| `pgvector` | `pip install medha-archai[pgvector]` | Yes (PostgreSQL) | Teams already using PostgreSQL |
+
+### InMemory Backend (zero dependencies)
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+embedder = FastEmbedAdapter()
+settings = Settings(backend_type="memory")
+
+async with Medha(collection_name="my_cache", embedder=embedder, settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+### PostgreSQL + pgvector Backend
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+embedder = FastEmbedAdapter()
+settings = Settings(
+    backend_type="pgvector",
+    pg_dsn="postgresql://user:password@localhost:5432/mydb",
+)
+
+async with Medha(collection_name="my_cache", embedder=embedder, settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+Or via environment variables:
+
+```bash
+export MEDHA_BACKEND_TYPE=pgvector
+export MEDHA_PG_DSN=postgresql://user:password@localhost:5432/mydb
+```
+
+---
+
 ## Configuration Examples
 
 Medha is highly configurable. Below are examples covering every major use case.
 
-### Basic: In-Memory with FastEmbed (Default)
+### Basic: Zero-Dependency In-Memory Setup
 
-The simplest setup, perfect for development, testing, and single-process applications. No external services needed.
+The simplest setup, perfect for development, testing, and CI. No external services needed.
 
 ```python
 import asyncio
@@ -154,7 +207,8 @@ from medha import Medha, Settings
 from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
 async def main():
-    settings = Settings(qdrant_mode="memory")  # default
+    # backend_type="memory" — pure-Python backend, zero external dependencies
+    settings = Settings(backend_type="memory")
     embedder = FastEmbedAdapter()
 
     async with Medha(
@@ -185,6 +239,7 @@ from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
 async def main():
     settings = Settings(
+        backend_type="qdrant",
         qdrant_mode="docker",
         qdrant_host="localhost",
         qdrant_port=6333,
@@ -217,9 +272,10 @@ from medha.embeddings.openai_adapter import OpenAIAdapter
 
 async def main():
     settings = Settings(
+        backend_type="qdrant",
         qdrant_mode="cloud",
         qdrant_url="https://your-cluster.cloud.qdrant.io",
-        qdrant_api_key="your-qdrant-api-key",
+        qdrant_api_key="your-qdrant-api-key",  # stored as SecretStr, never logged
     )
     embedder = OpenAIAdapter(
         model_name="text-embedding-3-small",
@@ -451,6 +507,41 @@ Internally calls `store_batch()` — a single embedding round-trip for all entri
 
 ---
 
+## Security Settings
+
+Medha 0.2.0 adds three settings to defend against common attack vectors when
+Medha is exposed to untrusted input.
+
+### Input Length Guard — `max_question_length`
+
+Prevent DoS via oversized question strings. `search()` returns
+`SearchStrategy.ERROR`; `store()` raises `ValueError`.
+
+```python
+settings = Settings(max_question_length=2048)  # default: 8192
+```
+
+### File Size Limit — `max_file_size_mb`
+
+`warm_from_file()` and `load_templates_from_file()` reject files larger than
+this limit *before* reading them.
+
+```python
+settings = Settings(max_file_size_mb=50)  # default: 100 MB
+```
+
+### Path Traversal Protection — `allowed_file_dir`
+
+When set, `warm_from_file()` and `load_templates_from_file()` reject any path
+that resolves outside the specified directory.
+
+```python
+settings = Settings(allowed_file_dir="/app/data")
+# warm_from_file("/app/data/../etc/passwd") → ValueError
+```
+
+---
+
 ## Distributed L1 Cache (Redis)
 
 By default Medha's L1 cache is in-process. With multiple service instances (horizontal scaling) each process has its own isolated cache. Use `RedisL1Cache` to share the L1 cache across instances.
@@ -518,6 +609,7 @@ from medha import Medha, Settings
 from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
 settings = Settings(
+    backend_type="qdrant",
     qdrant_mode="docker",
     embedding_cache_path="/var/cache/medha/embeddings.json",
 )
@@ -1043,9 +1135,10 @@ setup_logging(level="INFO", log_file="medha.log")
 # Production settings
 settings = Settings(
     # Qdrant Cloud
+    backend_type="qdrant",
     qdrant_mode="cloud",
     qdrant_url="https://your-cluster.cloud.qdrant.io",
-    qdrant_api_key="your-api-key",
+    qdrant_api_key="your-api-key",  # stored as SecretStr, never logged
 
     # Query language
     query_language="sql",
@@ -1077,6 +1170,11 @@ settings = Settings(
 
     # Persist embedding cache across restarts
     embedding_cache_path="/var/cache/medha/embeddings.json",
+
+    # Security
+    max_question_length=8192,          # reject oversized questions (DoS guard)
+    allowed_file_dir="/app/data",      # restrict warm_from_file() to this dir
+    max_file_size_mb=100,              # reject files larger than 100 MB
 )
 
 # OpenAI embeddings
@@ -1187,6 +1285,8 @@ asyncio.run(main())
 | `FastEmbedAdapter` | Local embeddings via FastEmbed (ONNX) |
 | `OpenAIAdapter` | OpenAI embedding API adapter |
 | `QdrantBackend` | Qdrant vector storage (memory / docker / cloud) |
+| `InMemoryBackend` | Pure-Python in-process backend, zero deps (`backend_type="memory"`) |
+| `PgVectorBackend` | PostgreSQL + pgvector backend (`pip install medha[pgvector]`) |
 | `InMemoryL1Cache` | Default in-process LRU L1 cache |
 | `RedisL1Cache` | Redis-backed L1 cache (`pip install medha[redis]`) |
 
@@ -1206,6 +1306,10 @@ asyncio.run(main())
 * [x] Per-tier latency stats (`tier_latencies_ms` in `cache.stats`).
 * [x] Persistent embedding cache (`MEDHA_EMBEDDING_CACHE_PATH`).
 * [x] Parallel execution of Tier 2 (exact) and Tier 3 (semantic).
+* [x] `InMemoryBackend` — pure-Python vector backend, zero external deps.
+* [x] `PgVectorBackend` — PostgreSQL + pgvector backend.
+* [x] `backend_type` setting for declarative backend selection.
+* [x] Security hardening: `max_question_length`, `max_file_size_mb`, `allowed_file_dir`, `qdrant_api_key` as `SecretStr`, PostgreSQL identifier validation.
 * [ ] Feedback loop — mark a cache hit as correct/incorrect.
 
 ---

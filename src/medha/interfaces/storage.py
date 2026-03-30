@@ -1,7 +1,9 @@
 """VectorStorageBackend abstract class defining the storage interface."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any
 
 from medha.types import CacheEntry, CacheResult
 
@@ -10,7 +12,7 @@ class VectorStorageBackend(ABC):
     """Abstract base class for vector storage backends."""
 
     @abstractmethod
-    async def initialize(self, collection_name: str, dimension: int, **kwargs) -> None:
+    async def initialize(self, collection_name: str, dimension: int, **kwargs: Any) -> None:
         """Set up the storage backend (create collection, indexes, quantization).
 
         This method is idempotent: calling it twice with the same arguments
@@ -30,10 +32,10 @@ class VectorStorageBackend(ABC):
     async def search(
         self,
         collection_name: str,
-        vector: List[float],
+        vector: list[float],
         limit: int = 5,
         score_threshold: float = 0.0,
-    ) -> List[CacheResult]:
+    ) -> list[CacheResult]:
         """Search for similar vectors.
 
         Args:
@@ -51,7 +53,7 @@ class VectorStorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def upsert(self, collection_name: str, entries: List[CacheEntry]) -> None:
+    async def upsert(self, collection_name: str, entries: list[CacheEntry]) -> None:
         """Insert or update cache entries.
 
         Args:
@@ -68,9 +70,9 @@ class VectorStorageBackend(ABC):
         self,
         collection_name: str,
         limit: int = 100,
-        offset: Optional[str] = None,
+        offset: str | None = None,
         with_vectors: bool = False,
-    ) -> tuple[List[CacheResult], Optional[str]]:
+    ) -> tuple[list[CacheResult], str | None]:
         """Iterate over all points in a collection.
 
         Used by fuzzy search (Tier 4) and admin operations.
@@ -99,7 +101,7 @@ class VectorStorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def delete(self, collection_name: str, ids: List[str]) -> None:
+    async def delete(self, collection_name: str, ids: list[str]) -> None:
         """Delete points by ID.
 
         Args:
@@ -116,11 +118,20 @@ class VectorStorageBackend(ABC):
         """Release resources (close connections, etc.)."""
         ...
 
+    async def connect(self) -> None:
+        """Establish connection. No-op for backends that don't require it."""
+        return
+
     # --- Context manager support ---
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> VectorStorageBackend:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool:
         await self.close()
         return False
