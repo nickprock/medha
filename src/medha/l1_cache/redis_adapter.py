@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from medha.interfaces.l1_cache import L1CacheBackend
 from medha.types import CacheHit, SearchStrategy
@@ -36,11 +35,11 @@ class RedisL1Cache(L1CacheBackend):
         self,
         url: str = "redis://localhost:6379/0",
         prefix: str = "medha:l1",
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
         max_size: int = 1000,
     ) -> None:
         try:
-            import redis.asyncio as aioredis  # type: ignore[import]
+            import redis.asyncio as aioredis
         except ImportError as exc:
             raise ImportError(
                 "RedisL1Cache requires the 'redis' package. "
@@ -75,7 +74,7 @@ class RedisL1Cache(L1CacheBackend):
             generated_query=payload.get("generated_query"),
             response_summary=payload.get("response_summary"),
             confidence=payload.get("confidence", 1.0),
-            strategy=SearchStrategy(payload["strategy"]) if payload.get("strategy") else None,
+            strategy=SearchStrategy(payload["strategy"]) if payload.get("strategy") else SearchStrategy.NO_MATCH,
             template_used=payload.get("template_used"),
         )
 
@@ -83,7 +82,7 @@ class RedisL1Cache(L1CacheBackend):
     # L1CacheBackend interface
     # ------------------------------------------------------------------
 
-    async def get(self, key: str) -> Optional[CacheHit]:
+    async def get(self, key: str) -> CacheHit | None:
         try:
             data = await self._client.get(self._key(key))
             if data is None:

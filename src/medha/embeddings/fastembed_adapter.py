@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List
 
 try:
     from fastembed import TextEmbedding
@@ -12,9 +11,9 @@ try:
     _FASTEMBED_AVAILABLE = True
 except ImportError:
     _FASTEMBED_AVAILABLE = False
-    TextEmbedding = None  # type: ignore[assignment,misc]
-    ModelSource = None  # type: ignore[assignment,misc]
-    PoolingType = None  # type: ignore[assignment,misc]
+    TextEmbedding = None
+    ModelSource = None
+    PoolingType = None
 
 from medha.exceptions import EmbeddingError
 from medha.interfaces.embedder import BaseEmbedder
@@ -67,7 +66,7 @@ class FastEmbedAdapter(BaseEmbedder):
     def model_name(self) -> str:
         return self._model_name
 
-    async def aembed(self, text: str) -> List[float]:
+    async def aembed(self, text: str) -> list[float]:
         """Generate embedding for a single text.
 
         FastEmbed is synchronous under the hood; we run it in a thread
@@ -86,7 +85,7 @@ class FastEmbedAdapter(BaseEmbedder):
                 f"Failed to embed text with model '{self._model_name}': {e}"
             ) from e
 
-    async def aembed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Uses fastembed's native batching for efficiency.
@@ -104,7 +103,7 @@ class FastEmbedAdapter(BaseEmbedder):
                 f"Failed to embed batch with model '{self._model_name}': {e}"
             ) from e
 
-    def _embed_sync(self, text: str) -> List[float]:
+    def _embed_sync(self, text: str) -> list[float]:
         """Synchronous single-text embedding."""
         if self._model is None:
             raise EmbeddingError("Embedding model is not initialized.")
@@ -112,7 +111,7 @@ class FastEmbedAdapter(BaseEmbedder):
         vector = embeddings[0]
         return vector.tolist() if hasattr(vector, "tolist") else list(vector)
 
-    def _embed_batch_sync(self, texts: List[str]) -> List[List[float]]:
+    def _embed_batch_sync(self, texts: list[str]) -> list[list[float]]:
         """Synchronous batch embedding using native fastembed batching."""
         if self._model is None:
             raise EmbeddingError("Embedding model is not initialized.")

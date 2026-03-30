@@ -1,13 +1,13 @@
 """Shared pytest fixtures for Medha tests."""
 
 import hashlib
-from typing import List
+import uuid
 
 import pytest
 
 from medha.config import Settings
 from medha.interfaces.embedder import BaseEmbedder
-from medha.types import QueryTemplate
+from medha.types import CacheEntry, QueryTemplate
 
 
 class MockEmbedder(BaseEmbedder):
@@ -31,7 +31,7 @@ class MockEmbedder(BaseEmbedder):
     def model_name(self) -> str:
         return self._model_name
 
-    async def aembed(self, text: str) -> List[float]:
+    async def aembed(self, text: str) -> list[float]:
         """Generate a deterministic embedding from text hash."""
         h = hashlib.sha256(text.lower().encode()).hexdigest()
         # Expand hash to fill dimension
@@ -43,7 +43,7 @@ class MockEmbedder(BaseEmbedder):
         magnitude = sum(v**2 for v in values) ** 0.5
         return [v / magnitude for v in values] if magnitude > 0 else values
 
-    async def aembed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         return [await self.aembed(t) for t in texts]
 
 
@@ -64,6 +64,117 @@ def test_settings():
         score_threshold_fuzzy=80.0,
         l1_cache_max_size=100,
     )
+
+
+@pytest.fixture
+async def medha_memory(mock_embedder):
+    """Medha with InMemoryBackend and MockEmbedder (deterministic, no external deps)."""
+    from medha.backends.memory import InMemoryBackend
+    from medha.core import Medha
+
+    backend = InMemoryBackend()
+    await backend.connect()
+    settings = Settings(
+        backend_type="memory",
+        score_threshold_exact=0.99,
+        score_threshold_semantic=0.85,
+        l1_cache_max_size=100,
+    )
+    m = Medha(
+        collection_name="inmemory_e2e",
+        embedder=mock_embedder,
+        backend=backend,
+        settings=settings,
+    )
+    await m.start()
+    yield m
+    await m.close()
+
+
+@pytest.fixture
+def test_settings_memory():
+    """Settings con backend_type=memory."""
+    return Settings(
+        backend_type="memory",
+        score_threshold_exact=0.99,
+        score_threshold_semantic=0.85,
+        score_threshold_template=0.80,
+        score_threshold_fuzzy=80.0,
+        l1_cache_max_size=100,
+    )
+
+
+@pytest.fixture
+async def inmemory_backend():
+    from medha.backends.memory import InMemoryBackend
+    b = InMemoryBackend()
+    await b.connect()
+    yield b
+    await b.close()
+
+
+@pytest.fixture
+def test_settings_pgvector():
+    """Settings con backend_type=pgvector. Richiede PG reale."""
+    import os
+    return Settings(
+        backend_type="pgvector",
+        pg_dsn=os.environ.get(
+            "MEDHA_TEST_PG_DSN",
+            "postgresql://postgres:postgres@localhost:5432/medha_test",
+        ),
+        score_threshold_exact=0.99,
+        score_threshold_semantic=0.85,
+        score_threshold_template=0.80,
+        score_threshold_fuzzy=80.0,
+        l1_cache_max_size=100,
+    )
+
+
+@pytest.fixture(params=["memory"])
+async def any_backend(request):
+    """Parametrizzato su tutti i backend testabili senza servizi esterni."""
+    if request.param == "memory":
+        from medha.backends.memory import InMemoryBackend
+        b = InMemoryBackend()
+        await b.connect()
+        yield b
+        await b.close()
+
+
+@pytest.fixture
+async def pgvector_backend(test_settings_pgvector):
+    pytest.importorskip("asyncpg")  # skip if not installed
+    from medha.backends.pgvector import PgVectorBackend
+    b = PgVectorBackend(test_settings_pgvector)
+    await b.connect()
+    yield b
+    await b.close()
+
+
+def make_entry(
+    id: str | None = None,
+    vector: list[float] | None = None,
+    question: str = "test question",
+    query: str = "SELECT 1",
+    dim: int = 8,
+) -> CacheEntry:
+    """Factory per CacheEntry usata nei test."""
+    vec = vector or [0.1] * dim
+    return CacheEntry(
+        id=id or str(uuid.uuid4()),
+        vector=vec,
+        original_question=question,
+        normalized_question=question.lower(),
+        generated_query=query,
+        query_hash=hashlib.md5(query.encode()).hexdigest(),
+    )
+
+
+@pytest.fixture
+def make_entry_fixture():
+    """Fixture wrapper per make_entry."""
+    return make_entry
 
 
 @pytest.fixture

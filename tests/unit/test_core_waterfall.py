@@ -1,24 +1,22 @@
 """Unit tests for medha.core.Medha waterfall search logic."""
 
 import json
+
 import pytest
-from typing import Dict, List, Optional
-from unittest.mock import AsyncMock
 
 from medha.config import Settings
 from medha.core import Medha
 from medha.exceptions import TemplateError
 from medha.interfaces.storage import VectorStorageBackend
-from medha.types import CacheEntry, CacheResult, CacheHit, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheResult, SearchStrategy
 from tests.conftest import MockEmbedder
-
 
 # ---------------------------------------------------------------------------
 # MockBackend — in-memory backend with cosine similarity
 # ---------------------------------------------------------------------------
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     mag_a = sum(x ** 2 for x in a) ** 0.5
     mag_b = sum(x ** 2 for x in b) ** 0.5
     if mag_a == 0 or mag_b == 0:
@@ -30,7 +28,7 @@ class MockBackend(VectorStorageBackend):
     """In-memory mock backend that stores entries in a dict."""
 
     def __init__(self):
-        self._collections: Dict[str, List[CacheEntry]] = {}
+        self._collections: dict[str, list[CacheEntry]] = {}
 
     async def initialize(self, collection_name: str, dimension: int, **kwargs) -> None:
         self._collections.setdefault(collection_name, [])
@@ -38,10 +36,10 @@ class MockBackend(VectorStorageBackend):
     async def search(
         self,
         collection_name: str,
-        vector: List[float],
+        vector: list[float],
         limit: int = 5,
         score_threshold: float = 0.0,
-    ) -> List[CacheResult]:
+    ) -> list[CacheResult]:
         entries = self._collections.get(collection_name, [])
         scored = []
         for e in entries:
@@ -67,16 +65,16 @@ class MockBackend(VectorStorageBackend):
             )
         return results
 
-    async def upsert(self, collection_name: str, entries: List[CacheEntry]) -> None:
+    async def upsert(self, collection_name: str, entries: list[CacheEntry]) -> None:
         self._collections.setdefault(collection_name, []).extend(entries)
 
     async def scroll(
         self,
         collection_name: str,
         limit: int = 100,
-        offset: Optional[str] = None,
+        offset: str | None = None,
         with_vectors: bool = False,
-    ) -> tuple[List[CacheResult], Optional[str]]:
+    ) -> tuple[list[CacheResult], str | None]:
         entries = self._collections.get(collection_name, [])
         start = int(offset) if offset else 0
         batch = entries[start : start + limit]
@@ -99,7 +97,7 @@ class MockBackend(VectorStorageBackend):
     async def count(self, collection_name: str) -> int:
         return len(self._collections.get(collection_name, []))
 
-    async def delete(self, collection_name: str, ids: List[str]) -> None:
+    async def delete(self, collection_name: str, ids: list[str]) -> None:
         entries = self._collections.get(collection_name, [])
         id_set = set(ids)
         self._collections[collection_name] = [e for e in entries if e.id not in id_set]
@@ -517,6 +515,7 @@ class TestAsyncCacheLocks:
 
     def test_l1_cache_backend_has_lock(self, medha_instance):
         import asyncio
+
         from medha.l1_cache.memory import InMemoryL1Cache
         assert isinstance(medha_instance._l1_backend, InMemoryL1Cache)
         assert hasattr(medha_instance._l1_backend, "_lock")

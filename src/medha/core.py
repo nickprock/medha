@@ -5,20 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections import OrderedDict
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any
 
 from medha.config import Settings
-from medha.types import CacheHit, CacheEntry, CacheResult, QueryTemplate, SearchStrategy
+from medha.exceptions import ConfigurationError, EmbeddingError, MedhaError, StorageError, TemplateError
 from medha.interfaces.embedder import BaseEmbedder
 from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
-from medha.utils.normalization import normalize_question, question_hash, query_hash
+from medha.types import CacheEntry, CacheHit, CacheResult, QueryTemplate, SearchStrategy
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
-from medha.exceptions import MedhaError, EmbeddingError, StorageError, TemplateError
+from medha.utils.normalization import normalize_question, query_hash, question_hash
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,7 @@ class Medha:
         embedder: BaseEmbedder,
         backend: VectorStorageBackend | None = None,
         settings: Settings | None = None,
-        templates: List[QueryTemplate] | None = None,
+        templates: list[QueryTemplate] | None = None,
         l1_backend: L1CacheBackend | None = None,
     ):
         self._collection_name = collection_name
@@ -72,12 +74,8 @@ class Medha:
         self._settings = settings or Settings()
         self._templates = templates or []
 
-        # Backend: default to Qdrant if not provided
-        if backend is None:
-            from medha.backends.qdrant import QdrantBackend
-            self._backend = QdrantBackend(self._settings)
-        else:
-            self._backend = backend
+        # Backend: use provided instance or build from settings.backend_type
+        self._backend = backend if backend is not None else self._build_backend()
 
         # L1 cache (Tier 0) — pluggable: in-memory (default) or Redis
         if l1_backend is not None:
@@ -87,12 +85,12 @@ class Medha:
             self._l1_backend = InMemoryL1Cache(max_size=self._settings.l1_cache_max_size)
 
         # Embedding cache (avoids redundant embedding calls)
-        self._embedding_cache: OrderedDict[str, List[float]] = OrderedDict()
+        self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._embedding_cache_max = 10000
         self._embedding_cache_lock = asyncio.Lock()
 
         # Deduplication: tracks in-flight embedding computations
-        self._pending_embeddings: Dict[str, asyncio.Future[List[float]]] = {}
+        self._pending_embeddings: dict[str, asyncio.Future[list[float]]] = {}
 
         # NLP parameter extractor
         self._param_extractor = ParameterExtractor()
@@ -107,7 +105,7 @@ class Medha:
             "misses": 0,
             "errors": 0,
         }
-        self._tier_latencies: Dict[str, Dict[str, float]] = {
+        self._tier_latencies: dict[str, dict[str, float]] = {
             "l1_cache":  {"total_ms": 0.0, "calls": 0},
             "template":  {"total_ms": 0.0, "calls": 0},
             "exact":     {"total_ms": 0.0, "calls": 0},
@@ -116,6 +114,33 @@ class Medha:
         }
         self._total_stored = 0
         self._warm_loaded = 0
+
+    # --- Private helpers ---
+
+    def _build_backend(self) -> VectorStorageBackend:
+        """Instantiate the correct vector backend from settings.backend_type.
+
+        Called only when no backend is passed to __init__. Allows users to
+        configure the backend via Settings without importing backend classes.
+
+        Returns:
+            A VectorStorageBackend instance (not yet connected/initialized).
+
+        Raises:
+            ConfigurationError: If backend_type is unknown or required deps are missing.
+        """
+        bt = self._settings.backend_type
+        if bt == "qdrant":
+            from medha.backends.qdrant import QdrantBackend
+            return QdrantBackend(self._settings)
+        elif bt == "memory":
+            from medha.backends.memory import InMemoryBackend
+            return InMemoryBackend()
+        elif bt == "pgvector":
+            from medha.backends.pgvector import PgVectorBackend
+            return PgVectorBackend(self._settings)
+        else:
+            raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
     # --- Lifecycle ---
 
@@ -182,16 +207,20 @@ class Medha:
         """Shut down the backend and release resources."""
         if self._settings.embedding_cache_path:
             self._save_embedding_cache_to_disk()
-        if hasattr(self._l1_backend, "close"):
-            await self._l1_backend.close()  # type: ignore[attr-defined]
+        await self._l1_backend.close()
         await self._backend.close()
         logger.info("Medha closed")
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Medha:
         await self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool:
         await self.close()
         return False
 
@@ -217,6 +246,15 @@ class Medha:
         try:
             if not question or not question.strip():
                 logger.warning("Search called with empty question")
+                return CacheHit(strategy=SearchStrategy.ERROR)
+
+            # NEW: length guard
+            if len(question) > self._settings.max_question_length:
+                logger.warning(
+                    "Search rejected: question length %d exceeds max %d",
+                    len(question),
+                    self._settings.max_question_length,
+                )
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
             logger.debug("Search started for: '%s'", question[:80])
@@ -319,7 +357,7 @@ class Medha:
 
     # --- Tier Implementations ---
 
-    async def _check_l1_cache(self, question: str) -> Optional[CacheHit]:
+    async def _check_l1_cache(self, question: str) -> CacheHit | None:
         """Check the L1 cache (pluggable backend).
 
         Key: MD5 hash of normalized question.
@@ -341,7 +379,7 @@ class Medha:
             hit.strategy.value if hit.strategy else "?",
         )
 
-    async def _search_templates(self, question: str) -> Optional[CacheHit]:
+    async def _search_templates(self, question: str) -> CacheHit | None:
         """Search for template matches using parameter extraction + keyword scoring.
 
         Iterates over all loaded templates and attempts parameter extraction.
@@ -359,7 +397,7 @@ class Medha:
             logger.debug("Template search skipped: no templates loaded")
             return None
 
-        best_hit: Optional[CacheHit] = None
+        best_hit: CacheHit | None = None
         best_score = 0.0
         normalized = normalize_question(question)
 
@@ -432,7 +470,7 @@ class Medha:
             return None
         return best_hit
 
-    async def _search_exact(self, embedding: List[float]) -> Optional[CacheHit]:
+    async def _search_exact(self, embedding: list[float]) -> CacheHit | None:
         """Search for exact vector match (score >= score_threshold_exact).
 
         Uses settings.score_threshold_exact (default 0.99).
@@ -455,7 +493,7 @@ class Medha:
             )
         return None
 
-    async def _search_semantic(self, embedding: List[float]) -> Optional[CacheHit]:
+    async def _search_semantic(self, embedding: list[float]) -> CacheHit | None:
         """Search for semantic similarity (score >= score_threshold_semantic).
 
         Uses settings.score_threshold_semantic (default 0.90).
@@ -479,8 +517,8 @@ class Medha:
         return None
 
     async def _search_fuzzy(
-        self, question: str, embedding: Optional[List[float]] = None
-    ) -> Optional[CacheHit]:
+        self, question: str, embedding: list[float] | None = None
+    ) -> CacheHit | None:
         """Search using Levenshtein distance (optional, requires rapidfuzz).
 
         When an embedding is provided, a vector pre-filter is applied first:
@@ -501,9 +539,9 @@ class Medha:
         normalized = normalize_question(question)
         threshold = self._settings.score_threshold_fuzzy
 
-        best_match: Optional[CacheResult] = None
+        best_match: CacheResult | None = None
         best_score = 0.0
-        _EARLY_EXIT_SCORE = 99.0
+        early_exit_score = 99.0
 
         if embedding is not None:
             # Fast path: vector pre-filter → fuzzy only on top-K candidates
@@ -524,7 +562,7 @@ class Medha:
                 if score > best_score and score >= threshold:
                     best_score = score
                     best_match = r
-                    if best_score >= _EARLY_EXIT_SCORE:
+                    if best_score >= early_exit_score:
                         break
         else:
             # Slow path: full collection scroll (no embedding available)
@@ -541,10 +579,10 @@ class Medha:
                     if score > best_score and score >= threshold:
                         best_score = score
                         best_match = r
-                        if best_score >= _EARLY_EXIT_SCORE:
+                        if best_score >= early_exit_score:
                             break
 
-                if offset is None or best_score >= _EARLY_EXIT_SCORE:
+                if offset is None or best_score >= early_exit_score:
                     break
 
         if best_match:
@@ -563,8 +601,8 @@ class Medha:
         self,
         question: str,
         generated_query: str,
-        response_summary: Optional[str] = None,
-        template_id: Optional[str] = None,
+        response_summary: str | None = None,
+        template_id: str | None = None,
     ) -> bool:
         """Store a question-query pair in the cache.
 
@@ -582,6 +620,11 @@ class Medha:
         if not question or not question.strip():
             logger.warning("Store skipped: question is empty or whitespace-only")
             return False
+        if len(question) > self._settings.max_question_length:
+            raise ValueError(
+                f"Question length {len(question)} exceeds max_question_length "
+                f"({self._settings.max_question_length})"
+            )
         if not generated_query or not generated_query.strip():
             logger.warning("Store skipped: generated_query is empty or whitespace-only")
             return False
@@ -627,7 +670,7 @@ class Medha:
             logger.error("Store failed for '%s': %s", question[:50], e, exc_info=True)
             return False
 
-    async def store_batch(self, entries: List[Dict]) -> bool:
+    async def store_batch(self, entries: list[dict[str, Any]]) -> bool:
         """Store multiple question-query pairs efficiently.
 
         Uses aembed_batch() for a single round-trip to the embedder, then
@@ -683,7 +726,7 @@ class Medha:
 
             # Populate embedding cache with all computed vectors
             async with self._embedding_cache_lock:
-                for question, vec in zip(questions, embeddings):
+                for question, vec in zip(questions, embeddings, strict=False):
                     cache_key = question_hash(question)
                     if len(self._embedding_cache) >= self._embedding_cache_max:
                         self._embedding_cache.popitem(last=False)
@@ -691,7 +734,7 @@ class Medha:
 
             # Build CacheEntry objects
             cache_entries = []
-            for item, embedding in zip(entries, embeddings):
+            for item, embedding in zip(entries, embeddings, strict=False):
                 question = item["question"]
                 normalized = normalize_question(question)
                 entry = CacheEntry(
@@ -731,7 +774,20 @@ class Medha:
 
     # --- Template Management ---
 
-    async def load_templates(self, templates: List[QueryTemplate]) -> None:
+    def _resolve_and_check_path(self, raw_path: str, label: str) -> Path:
+        """Resolve path and optionally enforce allowed_file_dir restriction."""
+        resolved = Path(raw_path).resolve()
+        if self._settings.allowed_file_dir is not None:
+            allowed = Path(self._settings.allowed_file_dir).resolve()
+            try:
+                resolved.relative_to(allowed)
+            except ValueError as err:
+                raise ValueError(
+                    f"{label}: path '{resolved}' is outside allowed_file_dir '{allowed}'"
+                ) from err
+        return resolved
+
+    async def load_templates(self, templates: list[QueryTemplate]) -> None:
         """Load templates into memory and sync to the template collection.
 
         Args:
@@ -753,11 +809,21 @@ class Medha:
             TemplateError: If the file cannot be read or parsed.
         """
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            resolved = self._resolve_and_check_path(file_path, "load_templates_from_file")
+            _max_bytes = self._settings.max_file_size_mb * 1024 * 1024
+            file_size = os.path.getsize(resolved)
+            if file_size > _max_bytes:
+                raise TemplateError(
+                    f"Template file '{resolved}' is {file_size / 1_048_576:.1f} MB, "
+                    f"exceeds max_file_size_mb={self._settings.max_file_size_mb}"
+                )
+            with open(resolved, encoding="utf-8") as f:
                 data = json.load(f)
             templates = [QueryTemplate(**item) for item in data]
             self._templates = templates
-            logger.info("Loaded %d templates from '%s'", len(templates), file_path)
+            logger.info("Loaded %d templates from '%s'", len(templates), resolved)
+        except TemplateError:
+            raise
         except Exception as e:
             raise TemplateError(
                 f"Failed to load templates from '{file_path}': {e}"
@@ -782,7 +848,15 @@ class Medha:
             MedhaError: If the file cannot be read or parsed.
         """
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            resolved = self._resolve_and_check_path(path, "warm_from_file")
+            _max_bytes = self._settings.max_file_size_mb * 1024 * 1024
+            file_size = os.path.getsize(resolved)
+            if file_size > _max_bytes:
+                raise MedhaError(
+                    f"warm_from_file: '{resolved}' is {file_size / 1_048_576:.1f} MB, "
+                    f"exceeds max_file_size_mb={self._settings.max_file_size_mb}"
+                )
+            with open(resolved, encoding="utf-8") as f:
                 content = f.read().strip()
 
             if content.startswith("["):
@@ -793,6 +867,8 @@ class Medha:
                     for line in content.splitlines()
                     if line.strip()
                 ]
+        except MedhaError:
+            raise
         except Exception as e:
             raise MedhaError(f"warm_from_file: cannot read '{path}': {e}") from e
 
@@ -831,7 +907,7 @@ class Medha:
         # Flatten all texts across templates into a single list for batch embedding.
         # Each item: (template, original_text, normalized_embed_text)
         # Strip {placeholder} braces so the embedder sees natural words.
-        items: List[tuple] = []
+        items: list[tuple[Any, ...]] = []
         for template in self._templates:
             for text in [template.template_text] + template.aliases:
                 embed_text = re.sub(r"\{(\w+)\}", r"\1", text)
@@ -869,7 +945,7 @@ class Medha:
                 query_hash=query_hash(template.query_template),
                 template_id=template.intent,
             )
-            for (template, original_text, _), vec in zip(items, vectors)
+            for (template, original_text, _), vec in zip(items, vectors, strict=False)
         ]
 
         await self._backend.upsert(self._template_collection, entries)
@@ -877,7 +953,7 @@ class Medha:
 
     # --- Embedding Cache ---
 
-    async def _get_embedding(self, question: str) -> Optional[List[float]]:
+    async def _get_embedding(self, question: str) -> list[float] | None:
         """Get or compute the embedding for a question.
 
         Checks the internal LRU cache first. If another coroutine is already
@@ -890,8 +966,8 @@ class Medha:
         normalized = normalize_question(question)
         cache_key = question_hash(question)
 
-        our_future: Optional[asyncio.Future[List[float]]] = None
-        wait_future: Optional[asyncio.Future[List[float]]] = None
+        our_future: asyncio.Future[list[float]] | None = None
+        wait_future: asyncio.Future[list[float]] | None = None
 
         async with self._embedding_cache_lock:
             # Cache hit → LRU bump and return
@@ -977,7 +1053,7 @@ class Medha:
     # --- Statistics & Monitoring ---
 
     @property
-    def stats(self) -> Dict:
+    def stats(self) -> dict[str, Any]:
         """Return cache performance statistics.
 
         Includes per-tier hit counts, average latency in milliseconds,
@@ -1032,8 +1108,8 @@ class Medha:
             if not os.path.exists(path):
                 logger.debug("Embedding cache file not found at '%s', starting empty", path)
                 return
-            with open(path, "r", encoding="utf-8") as f:
-                data: Dict[str, List[float]] = json.load(f)
+            with open(path, encoding="utf-8") as f:
+                data: dict[str, list[float]] = json.load(f)
             loaded = 0
             for key, vec in data.items():
                 if len(self._embedding_cache) >= self._embedding_cache_max:
@@ -1066,7 +1142,7 @@ class Medha:
         """Synchronous wrapper for search()."""
         return BaseEmbedder._run_sync(self.search(question))
 
-    def store_sync(self, question: str, generated_query: str, **kwargs) -> bool:
+    def store_sync(self, question: str, generated_query: str, **kwargs: Any) -> bool:
         """Synchronous wrapper for store()."""
         return BaseEmbedder._run_sync(self.store(question, generated_query, **kwargs))
 

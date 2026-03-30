@@ -3,34 +3,37 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+import uuid
+from typing import Any, cast
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
+    BinaryQuantization,
+    BinaryQuantizationConfig,
     Distance,
-    PointStruct,
-    VectorParams,
-    Filter,
     FieldCondition,
+    Filter,
+    HnswConfigDiff,
     MatchValue,
+    OptimizersConfigDiff,
+    PayloadSchemaType,
+    PointIdsList,
+    PointStruct,
+    QuantizationSearchParams,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
-    BinaryQuantization,
-    BinaryQuantizationConfig,
-    HnswConfigDiff,
-    OptimizersConfigDiff,
-    PayloadSchemaType,
-    TextIndexParams,
-    PointIdsList,
     SearchParams,
-    QuantizationSearchParams,
+    TextIndexParams,
+    TextIndexType,
+    TokenizerType,
+    VectorParams,
 )
 
 from medha.config import Settings
+from medha.exceptions import StorageError, StorageInitializationError
 from medha.interfaces.storage import VectorStorageBackend
 from medha.types import CacheEntry, CacheResult
-from medha.exceptions import StorageError, StorageInitializationError
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +80,7 @@ class QdrantBackend(VectorStorageBackend):
             ) from e
 
     async def initialize(
-        self, collection_name: str, dimension: int, **kwargs
+        self, collection_name: str, dimension: int, **kwargs: Any
     ) -> None:
         """Create and configure a Qdrant collection.
 
@@ -152,10 +155,10 @@ class QdrantBackend(VectorStorageBackend):
     async def search(
         self,
         collection_name: str,
-        vector: List[float],
+        vector: list[float],
         limit: int = 5,
         score_threshold: float = 0.0,
-    ) -> List[CacheResult]:
+    ) -> list[CacheResult]:
         """Search for similar vectors using query_points.
 
         Args:
@@ -204,7 +207,7 @@ class QdrantBackend(VectorStorageBackend):
                 f"Qdrant search failed on '{collection_name}': {e}"
             ) from e
 
-    async def upsert(self, collection_name: str, entries: List[CacheEntry]) -> None:
+    async def upsert(self, collection_name: str, entries: list[CacheEntry]) -> None:
         """Insert or update cache entries in batches.
 
         Args:
@@ -239,9 +242,9 @@ class QdrantBackend(VectorStorageBackend):
         self,
         collection_name: str,
         limit: int = 100,
-        offset: Optional[str] = None,
+        offset: str | None = None,
         with_vectors: bool = False,
-    ) -> tuple[List[CacheResult], Optional[str]]:
+    ) -> tuple[list[CacheResult], str | None]:
         """Iterate over all points in a collection.
 
         Args:
@@ -314,7 +317,7 @@ class QdrantBackend(VectorStorageBackend):
                 f"Qdrant count failed on '{collection_name}': {e}"
             ) from e
 
-    async def delete(self, collection_name: str, ids: List[str]) -> None:
+    async def delete(self, collection_name: str, ids: list[str]) -> None:
         """Delete points by ID.
 
         Args:
@@ -327,7 +330,7 @@ class QdrantBackend(VectorStorageBackend):
         try:
             await self.client.delete(
                 collection_name=collection_name,
-                points_selector=PointIdsList(points=ids),
+                points_selector=PointIdsList(points=cast("list[int | str | uuid.UUID]", ids)),
                 wait=True,
             )
             logger.info("Deleted %d points from '%s'", len(ids), collection_name)
@@ -352,7 +355,7 @@ class QdrantBackend(VectorStorageBackend):
         self,
         collection_name: str,
         query_hash: str,
-    ) -> Optional[CacheResult]:
+    ) -> CacheResult | None:
         """Find a cache entry by its query hash (exact payload filter).
 
         Used to check if a template-generated query already has a cached response.
@@ -460,12 +463,12 @@ class QdrantBackend(VectorStorageBackend):
             logger.debug("Qdrant Cloud URL: %s", self._settings.qdrant_url)
             return AsyncQdrantClient(
                 url=self._settings.qdrant_url,
-                api_key=self._settings.qdrant_api_key,
+                api_key=self._settings.qdrant_api_key.get_secret_value() if self._settings.qdrant_api_key else None,
             )
         else:
             raise StorageInitializationError(f"Unknown qdrant_mode: '{mode}'")
 
-    def _build_quantization_config(self, dimension: int, **kwargs):
+    def _build_quantization_config(self, dimension: int, **kwargs: Any) -> Any:
         """Choose quantization config based on dimension and settings.
 
         When ``on_disk=True`` and ``quantization_always_ram=True`` (the defaults
@@ -495,7 +498,7 @@ class QdrantBackend(VectorStorageBackend):
             )
         )
 
-    def _build_hnsw_config(self, **kwargs) -> HnswConfigDiff:
+    def _build_hnsw_config(self, **kwargs: Any) -> HnswConfigDiff:
         """Build HNSW config from settings."""
         return HnswConfigDiff(
             m=kwargs.get("hnsw_m", self._settings.hnsw_m),
@@ -546,8 +549,8 @@ class QdrantBackend(VectorStorageBackend):
             collection_name=collection_name,
             field_name="normalized_question",
             field_schema=TextIndexParams(
-                type="text",
-                tokenizer="word",
+                type=TextIndexType.TEXT,
+                tokenizer=TokenizerType.WORD,
                 min_token_len=2,
                 max_token_len=20,
                 lowercase=True,
@@ -557,7 +560,7 @@ class QdrantBackend(VectorStorageBackend):
         logger.info("Created payload indexes on '%s'", collection_name)
 
     @staticmethod
-    def _point_to_cache_result(point) -> CacheResult:
+    def _point_to_cache_result(point: Any) -> CacheResult:
         """Convert a Qdrant ScoredPoint to a CacheResult."""
         payload = point.payload or {}
         score = point.score if point.score is not None else 0.0
