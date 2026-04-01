@@ -405,12 +405,12 @@ def keyword_overlap_score(question: str, template_text: str) -> float:
         Float in [0.0, 1.0] representing the fraction of template
         keywords found in the question.
     """
+    clean_template = re.sub(r"\{\w+\}", "", template_text)
     question_words = set(re.findall(r"\b\w+\b", question.lower()))
-    template_words = set(re.findall(r"\b\w+\b", template_text.lower()))
+    template_words = set(re.findall(r"\b\w+\b", clean_template.lower()))
 
     question_words -= _STOP_WORDS
     template_words -= _STOP_WORDS
-    template_words = {w for w in template_words if not (w.startswith("{") and w.endswith("}"))}
 
     if not template_words:
         return 0.0
