@@ -212,6 +212,7 @@ __marimo__/
 # other folders
 spec/
 .claude/
+demo/.fastembed_cache/
 
 # other files
  nul
