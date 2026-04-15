@@ -14,6 +14,14 @@ _STOP_WORDS = frozenset({
     "to", "for", "of", "with", "by",
 })
 
+# Words that look capitalized in a question but are never parameter values
+_HEURISTIC_EXCLUDED_WORDS = frozenset({
+    "show", "find", "get", "count", "list", "display", "fetch", "return",
+    "give", "tell", "describe", "select", "what", "how", "which", "where",
+    "when", "who", "are", "is", "do", "does", "have", "has", "can",
+    "all", "top", "avg", "average", "total", "sum", "max", "min",
+})
+
 
 class ParameterExtractor:
     """Extract parameters from user questions using a cascading strategy."""
@@ -46,6 +54,9 @@ class ParameterExtractor:
         # Cache entity extraction results: same question is parsed once
         # even when matched against many templates in the same search call.
         self._entity_cache: dict[str, dict[str, list[str]]] = {}
+        # Cache GLiNER predictions: same (question, labels) tuple is inferred once,
+        # making repeated calls (e.g. benchmarks) equivalent to spaCy's _entity_cache.
+        self._gliner_cache: dict[tuple[str, tuple[str, ...]], dict[str, str]] = {}
 
         if use_spacy:
             self._try_load_spacy()
@@ -275,11 +286,18 @@ class ParameterExtractor:
 
         Uses ``template.parameters`` directly as entity labels, so no hardcoded
         label mapping is needed. GLiNER returns the best span for each label.
+
+        Results are cached per (question, labels) pair so repeated calls with
+        the same inputs (e.g. benchmarks) avoid redundant Transformer inference.
         """
         if not template.parameters or self._gliner is None:
             return {}
 
         labels = list(template.parameters)
+        cache_key = (question, tuple(sorted(labels)))
+        if cache_key in self._gliner_cache:
+            return self._gliner_cache[cache_key]
+
         try:
             entities = self._gliner.predict_entities(question, labels)
         except Exception as exc:
@@ -289,9 +307,17 @@ class ParameterExtractor:
         params: dict[str, str] = {}
         for entity in entities:
             label: str = entity["label"]
+            text: str = entity["text"]
+            # GLiNER sometimes includes the label word as a prefix of the span
+            # (e.g. label="project" → text="project Hermes"). Strip it.
+            if text.lower().startswith(label.lower() + " "):
+                text = text[len(label) + 1:]
             if label in template.parameters and label not in params:
-                params[label] = entity["text"]
+                params[label] = text
 
+        if len(self._gliner_cache) >= self._ENTITY_CACHE_MAXSIZE:
+            self._gliner_cache.clear()
+        self._gliner_cache[cache_key] = params
         return params
 
     def _extract_via_regex(
@@ -339,7 +365,12 @@ class ParameterExtractor:
         """Fallback: extract numbers and capitalized words."""
         params: dict[str, str] = {}
         numbers = re.findall(r"\b\d+\b", question)
-        capitalized = re.findall(r"\b[A-Z][a-zA-Z]+\b", question)
+        # Exclude common question/command words that are capitalized at sentence start
+        # (e.g. "Show", "Find", "Count") — they are never meaningful parameter values.
+        capitalized = [
+            w for w in re.findall(r"\b[A-Z][a-zA-Z]+\b", question)
+            if w.lower() not in _HEURISTIC_EXCLUDED_WORDS
+        ]
 
         numeric_params = ("count", "number", "limit", "top")
         for param in template.parameters:
@@ -374,12 +405,12 @@ def keyword_overlap_score(question: str, template_text: str) -> float:
         Float in [0.0, 1.0] representing the fraction of template
         keywords found in the question.
     """
+    clean_template = re.sub(r"\{\w+\}", "", template_text)
     question_words = set(re.findall(r"\b\w+\b", question.lower()))
-    template_words = set(re.findall(r"\b\w+\b", template_text.lower()))
+    template_words = set(re.findall(r"\b\w+\b", clean_template.lower()))
 
     question_words -= _STOP_WORDS
     template_words -= _STOP_WORDS
-    template_words = {w for w in template_words if not (w.startswith("{") and w.endswith("}"))}
 
     if not template_words:
         return 0.0

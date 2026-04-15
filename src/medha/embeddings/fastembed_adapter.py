@@ -28,7 +28,7 @@ class FastEmbedAdapter(BaseEmbedder):
     custom HuggingFace models via ONNX export.
 
     Args:
-        model_name: Model identifier. Defaults to "sentence-transformers/all-MiniLM-L6-v2".
+        model_name: Model identifier. Defaults to "BAAI/bge-small-en-v1.5".
         max_length: Maximum token length. Defaults to 512.
         cache_dir: Optional directory for model cache.
 
@@ -38,7 +38,7 @@ class FastEmbedAdapter(BaseEmbedder):
 
     def __init__(
         self,
-        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        model_name: str = "BAAI/bge-small-en-v1.5",
         max_length: int = 512,
         cache_dir: str | None = None,
     ):
