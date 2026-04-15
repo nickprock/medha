@@ -129,7 +129,12 @@ class QdrantBackend(VectorStorageBackend):
                 )
 
                 # Create payload indexes only on main collection (not template collections)
-                if not collection_name.startswith("__medha_templates_"):
+                # and only when not in memory mode (indexes have no effect in memory mode
+                # and Qdrant emits a UserWarning when they are created there).
+                if (
+                    not collection_name.startswith("__medha_templates_")
+                    and self._settings.qdrant_mode != "memory"
+                ):
                     try:
                         await self._create_payload_indexes(collection_name)
                     except Exception as idx_err:
