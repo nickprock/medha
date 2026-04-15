@@ -95,7 +95,7 @@ pip install "medha-archai[all]"
 
 ```bash
 # From GitHub
-pip install git+https://github.com/ArchAI-Labs/medha.git
+!pip install "medha-archai[all] @ git+https://github.com/ArchAI-Labs/medha.git"
 
 # Development install
 git clone https://github.com/ArchAI-Labs/medha.git
