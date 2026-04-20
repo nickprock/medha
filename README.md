@@ -4,7 +4,7 @@
 
 <br>
 
-![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_logo.png)
+![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_hex_600.png)
 
 <br>
 
