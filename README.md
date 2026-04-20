@@ -1,6 +1,10 @@
 # Medha
 
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/medha-archai?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/medha-archai)
+[![PyPI](https://img.shields.io/pypi/v/medha-archai)](https://pypi.org/project/medha-archai/)
+[![Python](https://img.shields.io/pypi/pyversions/medha-archai)](https://pypi.org/project/medha-archai/)
+[![License](https://img.shields.io/github/license/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/stargazers)
 
 <br>
 
