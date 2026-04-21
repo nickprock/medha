@@ -148,6 +148,9 @@ class Medha:
         elif bt == "elasticsearch":
             from medha.backends.elasticsearch import ElasticsearchBackend
             return ElasticsearchBackend(self._settings)
+        elif bt == "vectorchord":
+            from medha.backends.vectorchord import VectorChordBackend
+            return VectorChordBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 

@@ -20,14 +20,15 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch"] = Field(
+    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord"] = Field(
         default="memory",
         description=(
             "Vector storage backend to use. "
             "'memory' uses pure Python in-process storage, zero external deps (default). "
             "'qdrant' requires qdrant-client (pip install medha-archai[qdrant]). "
             "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector]). "
-            "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch])."
+            "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch]). "
+            "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord])."
         ),
     )
 
@@ -117,6 +118,16 @@ class Settings(BaseSettings):
     )
     pg_pool_min_size: int = Field(default=2, ge=1, description="Min connections in asyncpg pool")
     pg_pool_max_size: int = Field(default=10, ge=1, description="Max connections in asyncpg pool")
+
+    # --- VectorChord ---
+    vc_lists: list[int] = Field(
+        default_factory=lambda: [1000],
+        description="Number of centroids per level for the vchordrq index.",
+    )
+    vc_residual_quantization: bool = Field(
+        default=True,
+        description="Enable residual quantization in the vchordrq index.",
+    )
 
     # --- Elasticsearch ---
     es_hosts: list[str] = Field(

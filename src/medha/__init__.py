@@ -33,6 +33,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.vectorchord import VectorChordBackend
+    _optional.append("VectorChordBackend")
+except ImportError:
+    pass
+
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
     "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",

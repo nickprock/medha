@@ -52,8 +52,9 @@ pgvector = [
     "pgvector>=0.3,<1",
 ]
 elasticsearch = ["elasticsearch[async]>=8.12,<9"]
+vectorchord = ["asyncpg>=0.29,<1"]
 
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord]"]
 
 # Development
 dev = [

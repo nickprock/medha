@@ -1,5 +1,6 @@
-"""PgVectorBackend — PostgreSQL + pgvector storage backend."""
+"""VectorChordBackend — PostgreSQL + VectorChord (vchordrq) storage backend."""
 
+import json
 import logging
 import uuid
 from typing import Any
@@ -13,32 +14,52 @@ logger = logging.getLogger(__name__)
 
 try:
     import asyncpg
-    import pgvector.asyncpg
-    HAS_PGVECTOR = True
+    HAS_VECTORCHORD = True
 except ImportError:
-    HAS_PGVECTOR = False
+    HAS_VECTORCHORD = False
 
 
-class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
-    """PostgreSQL + pgvector backend. Requires asyncpg and pgvector packages."""
+def _encode_vector(v: list[float]) -> str:
+    return "[" + ",".join(str(x) for x in v) + "]"
+
+
+def _decode_vector(s: str) -> list[float]:
+    return [float(x) for x in s.strip("[]").split(",")]
+
+
+class VectorChordBackend(VectorStorageBackend, _AsyncpgBackendMixin):
+    """PostgreSQL + VectorChord backend using vchordrq index with RaBitQ quantization.
+
+    Drop-in replacement for PgVectorBackend. Requires asyncpg (no pgvector Python package).
+    The vectorchord PostgreSQL extension must be installed in the database.
+    """
 
     def __init__(self, settings: Any = None) -> None:
-        if not HAS_PGVECTOR:
+        if not HAS_VECTORCHORD:
             raise ConfigurationError(
-                "pgvector backend requires 'asyncpg' and 'pgvector'. "
-                "Install with: pip install medha-archai[pgvector]"
+                "vectorchord backend requires 'asyncpg'. "
+                "Install with: pip install medha-archai[vectorchord]"
             )
         from medha.config import Settings
         self._settings = settings or Settings()
         self._pool: asyncpg.Pool | None = None
         self._initialized_tables: set[str] = set()
 
+    async def _register_codecs(self, conn: Any) -> None:
+        await conn.set_type_codec(
+            "vector",
+            encoder=_encode_vector,
+            decoder=_decode_vector,
+            schema="public",
+            format="text",
+        )
+
     async def connect(self) -> None:
         try:
             kwargs = dict(
                 min_size=self._settings.pg_pool_min_size,
                 max_size=self._settings.pg_pool_max_size,
-                init=pgvector.asyncpg.register_vector,
+                init=self._register_codecs,
             )
             if self._settings.pg_dsn:
                 self._pool = await asyncpg.create_pool(dsn=self._settings.pg_dsn, **kwargs)
@@ -63,9 +84,14 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
         schema = self._settings.pg_schema
         table = self._table_name(collection_name)
 
+        vc_lists = kwargs.get("vc_lists", self._settings.vc_lists)
+        vc_residual = kwargs.get("vc_residual_quantization", self._settings.vc_residual_quantization)
+
+        lists_sql = json.dumps(vc_lists)
+
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vectorchord")
 
                 await conn.execute(f"""
                     CREATE TABLE IF NOT EXISTS {schema}.{table} (
@@ -78,15 +104,17 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
                         response_summary     TEXT,
                         template_id          TEXT,
                         usage_count          INTEGER NOT NULL DEFAULT 1,
-                        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        expires_at           TIMESTAMPTZ
                     )
                 """)
 
+                residual_str = "true" if vc_residual else "false"
                 await conn.execute(f"""
-                    CREATE INDEX IF NOT EXISTS {table}_vector_hnsw_idx
+                    CREATE INDEX IF NOT EXISTS {table}_vector_vchordrq_idx
                         ON {schema}.{table}
-                        USING hnsw (vector vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 64)
+                        USING vchordrq (vector vector_cosine_ops)
+                        WITH (residual_quantization = {residual_str}, lists = '{lists_sql}')
                 """)
 
                 await conn.execute(f"""
@@ -98,11 +126,6 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
                     CREATE INDEX IF NOT EXISTS {table}_template_id_idx
                         ON {schema}.{table} (template_id)
                         WHERE template_id IS NOT NULL
-                """)
-
-                await conn.execute(f"""
-                    ALTER TABLE {schema}.{table}
-                        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
                 """)
 
                 await conn.execute(f"""
@@ -154,7 +177,7 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(sql, vector, score_threshold, limit)
         except asyncpg.PostgresError as e:
-            raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
+            raise StorageError(f"VectorChord operation failed on '{collection_name}': {e}") from e
 
         return [_row_to_cache_result(row) for row in rows]
 
@@ -205,7 +228,7 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
                     for entry in entries
                 ])
         except asyncpg.PostgresError as e:
-            raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
+            raise StorageError(f"VectorChord operation failed on '{collection_name}': {e}") from e
 
     async def find_expired(self, collection_name: str) -> list[str]:
         if self._pool is None:
@@ -224,4 +247,4 @@ class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
                 rows = await conn.fetch(sql)
             return [row["id"] for row in rows]
         except asyncpg.PostgresError as e:
-            raise StorageError(f"PgVector find_expired failed on '{collection_name}': {e}") from e
+            raise StorageError(f"VectorChord find_expired failed on '{collection_name}': {e}") from e
