@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord", "chroma"] = Field(
+    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord", "chroma", "weaviate"] = Field(
         default="memory",
         description=(
             "Vector storage backend to use. "
@@ -29,7 +29,8 @@ class Settings(BaseSettings):
             "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector]). "
             "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch]). "
             "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord]). "
-            "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma])."
+            "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma]). "
+            "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate])."
         ),
     )
 
@@ -128,6 +129,23 @@ class Settings(BaseSettings):
     vc_residual_quantization: bool = Field(
         default=True,
         description="Enable residual quantization in the vchordrq index.",
+    )
+
+    # --- Weaviate ---
+    weaviate_mode: Literal["local", "cloud"] = Field(
+        default="local",
+        description="Weaviate connection mode: 'local' (self-hosted) or 'cloud' (Weaviate Cloud).",
+    )
+    weaviate_host: str = Field(default="localhost", description="Weaviate host (local mode)")
+    weaviate_http_port: int = Field(default=8080, ge=1, le=65535, description="Weaviate HTTP port (local mode)")
+    weaviate_grpc_port: int = Field(default=50051, ge=1, le=65535, description="Weaviate gRPC port (local mode)")
+    weaviate_http_secure: bool = Field(default=False, description="Use HTTPS for Weaviate HTTP connection")
+    weaviate_grpc_secure: bool = Field(default=False, description="Use TLS for Weaviate gRPC connection")
+    weaviate_cloud_url: str | None = Field(default=None, description="Weaviate Cloud cluster URL (cloud mode)")
+    weaviate_api_key: SecretStr | None = Field(default=None, description="Weaviate API key")
+    weaviate_collection_prefix: str = Field(
+        default="Medha",
+        description="Prefix for Weaviate collection names in PascalCase (e.g. 'Medha' → 'MedhaMyCache')",
     )
 
     # --- Chroma ---

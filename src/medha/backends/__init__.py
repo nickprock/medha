@@ -34,4 +34,10 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.weaviate import WeaviateBackend
+    _all_extra.append("WeaviateBackend")
+except ImportError:
+    pass
+
 __all__ = ["InMemoryBackend"] + (["QdrantBackend"] if HAS_QDRANT else []) + _all_extra

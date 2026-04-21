@@ -54,8 +54,9 @@ pgvector = [
 elasticsearch = ["elasticsearch[async]>=8.12,<9"]
 vectorchord = ["asyncpg>=0.29,<1"]
 chroma = ["chromadb>=0.5,<1"]
+weaviate = ["weaviate-client>=4.6,<5"]
 
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma,weaviate]"]
 
 # Development
 dev = [
@@ -141,5 +142,7 @@ module = [
     "elasticsearch.*",
     "chromadb",
     "chromadb.*",
+    "weaviate",
+    "weaviate.*",
 ]
 ignore_missing_imports = true

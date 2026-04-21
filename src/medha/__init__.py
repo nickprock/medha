@@ -45,6 +45,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.weaviate import WeaviateBackend
+    _optional.append("WeaviateBackend")
+except ImportError:
+    pass
+
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
     "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",

@@ -154,6 +154,9 @@ class Medha:
         elif bt == "chroma":
             from medha.backends.chroma import ChromaBackend
             return ChromaBackend(self._settings)
+        elif bt == "weaviate":
+            from medha.backends.weaviate import WeaviateBackend
+            return WeaviateBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
