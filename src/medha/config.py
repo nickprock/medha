@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord"] = Field(
+    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord", "chroma"] = Field(
         default="memory",
         description=(
             "Vector storage backend to use. "
@@ -28,7 +28,8 @@ class Settings(BaseSettings):
             "'qdrant' requires qdrant-client (pip install medha-archai[qdrant]). "
             "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector]). "
             "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch]). "
-            "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord])."
+            "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord]). "
+            "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma])."
         ),
     )
 
@@ -128,6 +129,17 @@ class Settings(BaseSettings):
         default=True,
         description="Enable residual quantization in the vchordrq index.",
     )
+
+    # --- Chroma ---
+    chroma_mode: Literal["ephemeral", "persistent", "http"] = Field(
+        default="ephemeral",
+        description="Chroma connection mode: 'ephemeral' (in-memory), 'persistent' (local disk), 'http' (remote server).",
+    )
+    chroma_host: str = Field(default="localhost", description="Chroma server host (http mode)")
+    chroma_port: int = Field(default=8000, ge=1, le=65535, description="Chroma server port (http mode)")
+    chroma_persist_path: str | None = Field(default=None, description="Directory for Chroma persistent storage")
+    chroma_ssl: bool = Field(default=False, description="Use SSL for Chroma http connection")
+    chroma_auth_token: SecretStr | None = Field(default=None, description="Bearer token for Chroma http authentication")
 
     # --- Elasticsearch ---
     es_hosts: list[str] = Field(

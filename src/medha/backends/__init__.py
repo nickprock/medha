@@ -28,4 +28,10 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.chroma import ChromaBackend
+    _all_extra.append("ChromaBackend")
+except ImportError:
+    pass
+
 __all__ = ["InMemoryBackend"] + (["QdrantBackend"] if HAS_QDRANT else []) + _all_extra

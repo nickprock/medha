@@ -53,8 +53,9 @@ pgvector = [
 ]
 elasticsearch = ["elasticsearch[async]>=8.12,<9"]
 vectorchord = ["asyncpg>=0.29,<1"]
+chroma = ["chromadb>=0.5,<1"]
 
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma]"]
 
 # Development
 dev = [
@@ -138,5 +139,7 @@ module = [
     "numpy.*",
     "elasticsearch",
     "elasticsearch.*",
+    "chromadb",
+    "chromadb.*",
 ]
 ignore_missing_imports = true

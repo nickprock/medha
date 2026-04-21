@@ -151,6 +151,9 @@ class Medha:
         elif bt == "vectorchord":
             from medha.backends.vectorchord import VectorChordBackend
             return VectorChordBackend(self._settings)
+        elif bt == "chroma":
+            from medha.backends.chroma import ChromaBackend
+            return ChromaBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 

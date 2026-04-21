@@ -39,6 +39,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.chroma import ChromaBackend
+    _optional.append("ChromaBackend")
+except ImportError:
+    pass
+
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
     "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",
