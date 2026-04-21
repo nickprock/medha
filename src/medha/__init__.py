@@ -27,6 +27,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.elasticsearch import ElasticsearchBackend
+    _optional.append("ElasticsearchBackend")
+except ImportError:
+    pass
+
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
     "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",

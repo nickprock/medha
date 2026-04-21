@@ -51,8 +51,9 @@ pgvector = [
     "asyncpg>=0.29,<1",
     "pgvector>=0.3,<1",
 ]
+elasticsearch = ["elasticsearch[async]>=8.12,<9"]
 
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch]"]
 
 # Development
 dev = [
@@ -134,5 +135,7 @@ module = [
     "redis.*",
     "numpy",
     "numpy.*",
+    "elasticsearch",
+    "elasticsearch.*",
 ]
 ignore_missing_imports = true

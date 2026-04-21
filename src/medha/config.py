@@ -20,13 +20,14 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector"] = Field(
+    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch"] = Field(
         default="memory",
         description=(
             "Vector storage backend to use. "
             "'memory' uses pure Python in-process storage, zero external deps (default). "
             "'qdrant' requires qdrant-client (pip install medha-archai[qdrant]). "
-            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector])."
+            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector]). "
+            "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch])."
         ),
     )
 
@@ -116,6 +117,20 @@ class Settings(BaseSettings):
     )
     pg_pool_min_size: int = Field(default=2, ge=1, description="Min connections in asyncpg pool")
     pg_pool_max_size: int = Field(default=10, ge=1, description="Max connections in asyncpg pool")
+
+    # --- Elasticsearch ---
+    es_hosts: list[str] = Field(
+        default_factory=lambda: ["http://localhost:9200"],
+        description="Elasticsearch node URLs",
+    )
+    es_api_key: SecretStr | None = Field(default=None, description="Elasticsearch API key")
+    es_username: str | None = Field(default=None, description="Elasticsearch basic-auth username")
+    es_password: SecretStr | None = Field(default=None, description="Elasticsearch basic-auth password")
+    es_index_prefix: str = Field(default="medha", description="Prefix for Elasticsearch index names")
+    es_num_candidates: int = Field(
+        default=100, ge=1, le=10000, description="num_candidates for kNN search"
+    )
+    es_timeout: float = Field(default=30.0, gt=0.0, description="Request timeout in seconds")
 
     # --- Quantization search ---
     quantization_rescore: bool = Field(

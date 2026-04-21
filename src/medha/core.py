@@ -145,6 +145,9 @@ class Medha:
         elif bt == "pgvector":
             from medha.backends.pgvector import PgVectorBackend
             return PgVectorBackend(self._settings)
+        elif bt == "elasticsearch":
+            from medha.backends.elasticsearch import ElasticsearchBackend
+            return ElasticsearchBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
