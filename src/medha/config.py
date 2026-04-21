@@ -21,11 +21,11 @@ class Settings(BaseSettings):
 
     # --- Backend selection ---
     backend_type: Literal["qdrant", "memory", "pgvector"] = Field(
-        default="qdrant",
+        default="memory",
         description=(
             "Vector storage backend to use. "
-            "'qdrant' requires qdrant-client (default). "
-            "'memory' uses pure Python in-process storage, zero external deps. "
+            "'memory' uses pure Python in-process storage, zero external deps (default). "
+            "'qdrant' requires qdrant-client (pip install medha-archai[qdrant]). "
             "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector])."
         ),
     )
@@ -183,6 +183,26 @@ class Settings(BaseSettings):
             "Maximum allowed length (characters) for a question string. "
             "Questions exceeding this limit are rejected with SearchStrategy.ERROR "
             "to prevent DoS via oversized inputs. Default: 8192 chars (~8KB)."
+        ),
+    )
+
+    # --- Cache lifecycle ---
+    default_ttl_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "TTL di default in secondi per le nuove entry. "
+            "None = entry immortali (comportamento attuale). "
+            "Può essere sovrascritto entry per entry tramite il parametro ttl di store()."
+        ),
+    )
+    cleanup_interval_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        description=(
+            "Intervallo in secondi per il cleanup automatico delle entry scadute. "
+            "None = nessun cleanup automatico. "
+            "Se impostato, Medha.start() avvia un task asyncio che chiama expire() periodicamente."
         ),
     )
 

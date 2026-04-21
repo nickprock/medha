@@ -114,6 +114,57 @@ class VectorStorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def find_expired(self, collection_name: str) -> list[str]:
+        """Return IDs of entries with expires_at < now(UTC).
+
+        Raises:
+            StorageError: If the query fails.
+        """
+        ...
+
+    @abstractmethod
+    async def search_by_normalized_question(
+        self, collection_name: str, normalized_question: str
+    ) -> CacheResult | None:
+        """Find a single entry by exact normalized_question match.
+
+        Returns:
+            CacheResult if found, None otherwise.
+        """
+        ...
+
+    @abstractmethod
+    async def find_by_query_hash(
+        self, collection_name: str, query_hash: str
+    ) -> list[str]:
+        """Return all point IDs whose payload.query_hash matches *query_hash*.
+
+        Returns:
+            List of string IDs (may be empty).
+        """
+        ...
+
+    @abstractmethod
+    async def find_by_template_id(
+        self, collection_name: str, template_id: str
+    ) -> list[str]:
+        """Return all point IDs whose payload.template_id matches *template_id*.
+
+        Returns:
+            List of string IDs (may be empty).
+        """
+        ...
+
+    @abstractmethod
+    async def drop_collection(self, collection_name: str) -> None:
+        """Permanently delete the entire collection and all its data.
+
+        Raises:
+            StorageError: If the drop fails.
+        """
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         """Release resources (close connections, etc.)."""
         ...

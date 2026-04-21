@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medha-archai"
-version = "0.2.0"
+version = "0.3.0"
 description = "Semantic Memory for AI Text-to-Query systems"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -28,7 +28,6 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0,<3",
     "pydantic-settings>=2.0,<3",
-    "qdrant-client>=1.9,<2",
 ]
 
 [project.optional-dependencies]
@@ -47,12 +46,13 @@ fuzzy = ["rapidfuzz>=3.0,<4"]
 redis = ["redis[asyncio]>=5.0,<6"]
 
 # All optional providers
+qdrant = ["qdrant-client>=1.9,<2"]
 pgvector = [
     "asyncpg>=0.29,<1",
     "pgvector>=0.3,<1",
 ]
 
-all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,pgvector]"]
+all = ["medha-archai[fastembed,openai,nlp,gliner,fuzzy,redis,qdrant,pgvector]"]
 
 # Development
 dev = [

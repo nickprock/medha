@@ -105,6 +105,17 @@ class PgVectorBackend(VectorStorageBackend):
                         WHERE template_id IS NOT NULL
                 """)
 
+                await conn.execute(f"""
+                    ALTER TABLE {schema}.{table}
+                        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
+                """)
+
+                await conn.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table}_expires_at_idx
+                        ON {schema}.{table} (expires_at)
+                        WHERE expires_at IS NOT NULL
+                """)
+
         except asyncpg.PostgresError as e:
             raise StorageInitializationError(
                 f"Failed to initialize collection '{collection_name}': {e}"
@@ -136,9 +147,11 @@ class PgVectorBackend(VectorStorageBackend):
                 template_id,
                 usage_count,
                 created_at,
+                expires_at,
                 (1 - (vector <=> $1::vector))::float AS score
             FROM {schema}.{table}
             WHERE (1 - (vector <=> $1::vector)) >= $2
+              AND (expires_at IS NULL OR expires_at > NOW())
             ORDER BY vector <=> $1::vector
             LIMIT $3
         """
@@ -163,9 +176,9 @@ class PgVectorBackend(VectorStorageBackend):
             INSERT INTO {schema}.{table} (
                 id, vector, original_question, normalized_question,
                 generated_query, query_hash, response_summary,
-                template_id, usage_count, created_at
+                template_id, usage_count, created_at, expires_at
             )
-            VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 vector              = EXCLUDED.vector,
                 original_question   = EXCLUDED.original_question,
@@ -175,7 +188,8 @@ class PgVectorBackend(VectorStorageBackend):
                 response_summary    = EXCLUDED.response_summary,
                 template_id         = EXCLUDED.template_id,
                 usage_count         = EXCLUDED.usage_count,
-                created_at          = EXCLUDED.created_at
+                created_at          = EXCLUDED.created_at,
+                expires_at          = EXCLUDED.expires_at
         """
         try:
             async with self._pool.acquire() as conn:
@@ -191,6 +205,7 @@ class PgVectorBackend(VectorStorageBackend):
                         entry.template_id,
                         entry.usage_count,
                         entry.created_at,
+                        entry.expires_at,
                     )
                     for entry in entries
                 ])
@@ -262,11 +277,96 @@ class PgVectorBackend(VectorStorageBackend):
         except asyncpg.PostgresError as e:
             raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
 
+    async def find_expired(self, collection_name: str) -> list[str]:
+        if self._pool is None:
+            raise StorageError("Not connected. Call connect() first.")
+
+        schema = self._settings.pg_schema
+        table = self._table_name(collection_name)
+
+        sql = f"""
+            SELECT id::text FROM {schema}.{table}
+            WHERE expires_at IS NOT NULL AND expires_at < NOW()
+            LIMIT 10000
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql)
+            return [row["id"] for row in rows]
+        except asyncpg.PostgresError as e:
+            raise StorageError(f"PgVector find_expired failed on '{collection_name}': {e}") from e
+
     async def close(self) -> None:
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
             self._initialized_tables.clear()
+
+    async def search_by_normalized_question(
+        self, collection_name: str, normalized_question: str
+    ) -> CacheResult | None:
+        if self._pool is None:
+            raise StorageError("Not connected. Call connect() first.")
+        schema = self._settings.pg_schema
+        table = self._table_name(collection_name)
+        sql = f"""
+            SELECT id::text, original_question, normalized_question, generated_query,
+                   query_hash, response_summary, template_id, usage_count, created_at, expires_at
+            FROM {schema}.{table}
+            WHERE normalized_question = $1
+            LIMIT 1
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(sql, normalized_question)
+        except asyncpg.PostgresError as e:
+            raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
+        if row is None:
+            return None
+        return _row_to_cache_result(row, score=1.0)
+
+    async def find_by_query_hash(
+        self, collection_name: str, query_hash: str
+    ) -> list[str]:
+        if self._pool is None:
+            raise StorageError("Not connected. Call connect() first.")
+        schema = self._settings.pg_schema
+        table = self._table_name(collection_name)
+        sql = f"SELECT id::text FROM {schema}.{table} WHERE query_hash = $1"
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql, query_hash)
+            return [row["id"] for row in rows]
+        except asyncpg.PostgresError as e:
+            raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
+
+    async def find_by_template_id(
+        self, collection_name: str, template_id: str
+    ) -> list[str]:
+        if self._pool is None:
+            raise StorageError("Not connected. Call connect() first.")
+        schema = self._settings.pg_schema
+        table = self._table_name(collection_name)
+        sql = f"SELECT id::text FROM {schema}.{table} WHERE template_id = $1"
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql, template_id)
+            return [row["id"] for row in rows]
+        except asyncpg.PostgresError as e:
+            raise StorageError(f"PgVector operation failed on '{collection_name}': {e}") from e
+
+    async def drop_collection(self, collection_name: str) -> None:
+        if self._pool is None:
+            raise StorageError("Not connected. Call connect() first.")
+        schema = self._settings.pg_schema
+        table = self._table_name(collection_name)
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(f"DROP TABLE IF EXISTS {schema}.{table}")
+            self._initialized_tables.discard(collection_name)
+            logger.info("Dropped table '%s.%s'", schema, table)
+        except asyncpg.PostgresError as e:
+            raise StorageError(f"PgVector drop_collection failed on '{collection_name}': {e}") from e
 
     async def search_by_query_hash(
         self, collection_name: str, query_hash: str
@@ -333,4 +433,5 @@ def _row_to_cache_result(row: Any, score: float | None = None) -> CacheResult:
         template_id=row.get("template_id"),
         usage_count=row.get("usage_count", 0),
         created_at=row.get("created_at"),
+        expires_at=row.get("expires_at"),
     )

@@ -102,6 +102,44 @@ class MockBackend(VectorStorageBackend):
         id_set = set(ids)
         self._collections[collection_name] = [e for e in entries if e.id not in id_set]
 
+    async def find_expired(self, collection_name: str) -> list[str]:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        return [
+            e.id
+            for e in self._collections.get(collection_name, [])
+            if e.expires_at is not None and e.expires_at < now
+        ]
+
+    async def search_by_normalized_question(
+        self, collection_name: str, normalized_question: str
+    ) -> CacheResult | None:
+        for e in self._collections.get(collection_name, []):
+            if e.normalized_question == normalized_question:
+                return CacheResult(
+                    id=e.id, score=1.0,
+                    original_question=e.original_question,
+                    normalized_question=e.normalized_question,
+                    generated_query=e.generated_query,
+                    query_hash=e.query_hash,
+                )
+        return None
+
+    async def find_by_query_hash(self, collection_name: str, query_hash: str) -> list[str]:
+        return [
+            e.id for e in self._collections.get(collection_name, [])
+            if e.query_hash == query_hash
+        ]
+
+    async def find_by_template_id(self, collection_name: str, template_id: str) -> list[str]:
+        return [
+            e.id for e in self._collections.get(collection_name, [])
+            if e.template_id == template_id
+        ]
+
+    async def drop_collection(self, collection_name: str) -> None:
+        self._collections.pop(collection_name, None)
+
     async def close(self) -> None:
         pass
 

@@ -82,6 +82,14 @@ class CacheEntry(BaseModel):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    expires_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Scadenza opzionale dell'entry. "
+            "Se None, l'entry non scade mai. "
+            "Se nel passato, l'entry viene esclusa dalle ricerche."
+        ),
+    )
 
 
 class CacheResult(BaseModel):
@@ -97,3 +105,4 @@ class CacheResult(BaseModel):
     template_id: str | None = None
     usage_count: int = Field(default=0)
     created_at: datetime | None = None
+    expires_at: datetime | None = Field(default=None, description="Scadenza dell'entry, se impostata.")

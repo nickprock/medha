@@ -10,8 +10,12 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+_UNSET = object()
 
 from medha.config import Settings
 from medha.exceptions import ConfigurationError, EmbeddingError, MedhaError, StorageError, TemplateError
@@ -114,6 +118,8 @@ class Medha:
         }
         self._total_stored = 0
         self._warm_loaded = 0
+        self._cleanup_task: asyncio.Task[None] | None = None
+        self._known_collections = [self._collection_name]
 
     # --- Private helpers ---
 
@@ -197,6 +203,9 @@ class Medha:
         if self._settings.embedding_cache_path:
             self._load_embedding_cache_from_disk()
 
+        if self._settings.cleanup_interval_seconds:
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
         logger.info(
             "Medha started: collection='%s', templates=%d",
             self._collection_name,
@@ -205,6 +214,11 @@ class Medha:
 
     async def close(self) -> None:
         """Shut down the backend and release resources."""
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
         if self._settings.embedding_cache_path:
             self._save_embedding_cache_to_disk()
         await self._l1_backend.close()
@@ -603,6 +617,7 @@ class Medha:
         generated_query: str,
         response_summary: str | None = None,
         template_id: str | None = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
     ) -> bool:
         """Store a question-query pair in the cache.
 
@@ -636,6 +651,13 @@ class Medha:
                 logger.error("Store aborted: embedding failed for '%s'", question[:50])
                 return False
 
+            resolved_ttl = ttl if ttl is not _UNSET else self._settings.default_ttl_seconds
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=resolved_ttl)
+                if resolved_ttl is not None
+                else None
+            )
+
             normalized = normalize_question(question)
             entry = CacheEntry(
                 id=str(uuid.uuid4()),
@@ -646,6 +668,7 @@ class Medha:
                 query_hash=query_hash(generated_query),
                 response_summary=response_summary,
                 template_id=template_id,
+                expires_at=expires_at,
             )
 
             await self._backend.upsert(self._collection_name, [entry])
@@ -771,6 +794,164 @@ class Medha:
         except Exception as e:
             logger.error("Batch store failed: %s", e, exc_info=True)
             return False
+
+    # --- TTL / Expiry ---
+
+    async def expire(self, collection_name: str | None = None) -> int:
+        """Delete expired entries from the collection.
+
+        Args:
+            collection_name: Target collection. None = all known collections.
+
+        Returns:
+            Total number of entries deleted.
+        """
+        collections = [collection_name] if collection_name else self._known_collections
+        total = 0
+        for coll in collections:
+            try:
+                expired_ids = await self._backend.find_expired(coll)
+                if expired_ids:
+                    await self._backend.delete(coll, expired_ids)
+                    total += len(expired_ids)
+            except Exception:
+                logger.exception("expire() failed for collection '%s'", coll)
+        return total
+
+    # --- Invalidation API ---
+
+    async def invalidate(self, question: str) -> bool:
+        """Invalidate a single cache entry by its original question.
+
+        Finds the entry in the vector backend via normalized_question match,
+        deletes it, and removes the corresponding L1 key.
+
+        Args:
+            question: Natural language question whose cached entry to remove.
+
+        Returns:
+            True if an entry was found and deleted, False if not found.
+        """
+        normalized = normalize_question(question)
+        try:
+            result = await self._backend.search_by_normalized_question(
+                self._collection_name, normalized
+            )
+        except Exception:
+            logger.exception("invalidate: backend lookup failed for '%s'", question[:50])
+            return False
+
+        if result is None:
+            logger.debug("invalidate: no entry found for '%s'", question[:50])
+            return False
+
+        try:
+            await self._backend.delete(self._collection_name, [result.id])
+        except Exception:
+            logger.exception("invalidate: backend delete failed for id='%s'", result.id)
+            return False
+
+        key = question_hash(question)
+        await self._l1_backend.invalidate(key)
+        logger.info("Invalidated entry for '%s' (id=%s)", question[:50], result.id)
+        return True
+
+    async def invalidate_by_query_hash(self, query_hash: str) -> int:
+        """Invalidate all entries whose generated query matches *query_hash*.
+
+        Args:
+            query_hash: MD5 hash of the generated query (as stored in the backend).
+
+        Returns:
+            Number of entries deleted.
+        """
+        try:
+            ids = await self._backend.find_by_query_hash(self._collection_name, query_hash)
+        except Exception:
+            logger.exception("invalidate_by_query_hash: lookup failed for hash='%s'", query_hash)
+            return 0
+
+        if not ids:
+            return 0
+
+        try:
+            await self._backend.delete(self._collection_name, ids)
+        except Exception:
+            logger.exception("invalidate_by_query_hash: delete failed")
+            return 0
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated %d entries for query_hash='%s'", len(ids), query_hash)
+        return len(ids)
+
+    async def invalidate_by_template(self, template_id: str) -> int:
+        """Invalidate all entries belonging to a template.
+
+        Args:
+            template_id: Template intent identifier.
+
+        Returns:
+            Number of entries deleted.
+        """
+        try:
+            ids = await self._backend.find_by_template_id(self._collection_name, template_id)
+        except Exception:
+            logger.exception("invalidate_by_template: lookup failed for template_id='%s'", template_id)
+            return 0
+
+        if not ids:
+            return 0
+
+        try:
+            await self._backend.delete(self._collection_name, ids)
+        except Exception:
+            logger.exception("invalidate_by_template: delete failed")
+            return 0
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated %d entries for template_id='%s'", len(ids), template_id)
+        return len(ids)
+
+    async def invalidate_collection(self, collection_name: str | None = None) -> int:
+        """Drop and re-initialize a collection, clearing all its entries.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+
+        Returns:
+            Number of entries that were in the collection before deletion.
+        """
+        coll = collection_name or self._collection_name
+        try:
+            count = await self._backend.count(coll)
+        except Exception:
+            count = 0
+
+        try:
+            await self._backend.drop_collection(coll)
+        except Exception:
+            logger.exception("invalidate_collection: drop failed for '%s'", coll)
+            return 0
+
+        try:
+            await self._backend.initialize(coll, self._embedder.dimension)
+        except Exception:
+            logger.exception("invalidate_collection: re-initialize failed for '%s'", coll)
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated collection '%s' (%d entries dropped)", coll, count)
+        return count
+
+    async def _cleanup_loop(self) -> None:
+        interval = self._settings.cleanup_interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                n = await self.expire()
+                if n > 0:
+                    logger.info("TTL cleanup: removed %d expired entries", n)
+            except Exception:
+                logger.exception("TTL cleanup failed")
 
     # --- Template Management ---
 
