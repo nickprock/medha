@@ -52,6 +52,12 @@ except ImportError:
     pass
 
 try:
+    from medha.backends.redis_vector import RedisVectorBackend
+    _optional.append("RedisVectorBackend")
+except ImportError:
+    pass
+
+try:
     from medha.embeddings.cohere_adapter import CohereAdapter
     _optional.append("CohereAdapter")
 except ImportError:

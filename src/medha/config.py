@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector", "elasticsearch", "vectorchord", "chroma", "weaviate"] = Field(
+    backend_type: Literal[
+        "qdrant", "memory", "pgvector", "elasticsearch",
+        "vectorchord", "chroma", "weaviate", "redis"
+    ] = Field(
         default="memory",
         description=(
             "Vector storage backend to use. "
@@ -30,7 +33,8 @@ class Settings(BaseSettings):
             "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch]). "
             "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord]). "
             "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma]). "
-            "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate])."
+            "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate]). "
+            "'redis' requires redis[hiredis]>=4.6 (pip install medha-archai[redis])."
         ),
     )
 
@@ -147,6 +151,37 @@ class Settings(BaseSettings):
         default="Medha",
         description="Prefix for Weaviate collection names in PascalCase (e.g. 'Medha' → 'MedhaMyCache')",
     )
+
+    # --- Redis Stack ---
+    redis_mode: Literal["standalone", "sentinel"] = Field(
+        default="standalone",
+        description="Redis connection mode: 'standalone' or 'sentinel'.",
+    )
+    redis_url: str | None = Field(default=None, description="Full Redis URL (overrides host/port/db)")
+    redis_host: str = Field(default="localhost", description="Redis host (standalone mode)")
+    redis_port: int = Field(default=6379, ge=1, le=65535, description="Redis port")
+    redis_db: int = Field(default=0, ge=0, description="Redis database index")
+    redis_username: str | None = Field(default=None, description="Redis ACL username")
+    redis_password: SecretStr | None = Field(default=None, description="Redis password")
+    redis_ssl: bool = Field(default=False, description="Enable TLS for Redis connection")
+    redis_ssl_certfile: str | None = Field(default=None, description="Path to client TLS certificate")
+    redis_ssl_keyfile: str | None = Field(default=None, description="Path to client TLS key")
+    redis_ssl_ca_certs: str | None = Field(default=None, description="Path to CA certificate bundle")
+    redis_sentinel_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost:26379"],
+        description="Sentinel host:port list (sentinel mode)",
+    )
+    redis_sentinel_master: str = Field(default="mymaster", description="Sentinel master name")
+    redis_key_prefix: str = Field(default="medha", description="Prefix for all Redis keys and index names")
+    redis_index_algorithm: Literal["HNSW", "FLAT"] = Field(
+        default="HNSW",
+        description="RediSearch vector index algorithm: 'HNSW' (approx) or 'FLAT' (exact brute-force)",
+    )
+    redis_hnsw_m: int = Field(default=16, ge=4, le=64, description="HNSW: edges per node")
+    redis_hnsw_ef_construction: int = Field(default=200, ge=50, le=500, description="HNSW: build search depth")
+    redis_hnsw_ef_runtime: int = Field(default=10, ge=10, le=500, description="HNSW: query search depth")
+    redis_socket_timeout: float = Field(default=5.0, gt=0.0, description="Redis socket read timeout (s)")
+    redis_socket_connect_timeout: float = Field(default=5.0, gt=0.0, description="Redis socket connect timeout (s)")
 
     # --- Chroma ---
     chroma_mode: Literal["ephemeral", "persistent", "http"] = Field(

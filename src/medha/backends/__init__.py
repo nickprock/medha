@@ -40,4 +40,10 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.redis_vector import RedisVectorBackend
+    _all_extra.append("RedisVectorBackend")
+except ImportError:
+    pass
+
 __all__ = ["InMemoryBackend"] + (["QdrantBackend"] if HAS_QDRANT else []) + _all_extra

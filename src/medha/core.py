@@ -232,6 +232,9 @@ class Medha:
         elif bt == "weaviate":
             from medha.backends.weaviate import WeaviateBackend
             return WeaviateBackend(self._settings)
+        elif bt == "redis":
+            from medha.backends.redis_vector import RedisVectorBackend
+            return RedisVectorBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 

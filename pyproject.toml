@@ -44,8 +44,8 @@ gliner = ["gliner>=0.2,<1"]
 # Fuzzy matching
 fuzzy = ["rapidfuzz>=3.0,<4"]
 
-# Distributed L1 cache
-redis = ["redis[asyncio]>=5.0,<6"]
+# Redis Stack (RediSearch) vector backend + L1 cache
+redis = ["redis[hiredis]>=4.6,<6"]
 
 # All optional providers
 qdrant = ["qdrant-client>=1.9,<2"]
