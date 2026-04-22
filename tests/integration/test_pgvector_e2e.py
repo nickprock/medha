@@ -107,7 +107,8 @@ class TestStoreAndSearch:
 
         hit2 = await medha_pgvector.search("Get user count")
         assert hit2.strategy == SearchStrategy.L1_CACHE
-        assert medha_pgvector._stats["l1_hits"] >= 1
+        s = await medha_pgvector.stats()
+        assert s.by_strategy.get("l1_cache") is not None and s.by_strategy["l1_cache"].count >= 1
 
     async def test_no_match_empty(self, medha_pgvector):
         """Search on empty collection → NO_MATCH."""

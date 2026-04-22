@@ -6,6 +6,62 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class StrategyStats(BaseModel):
+    """Per-strategy hit count and total latency."""
+
+    model_config = ConfigDict(frozen=True)
+
+    count: int = Field(default=0, ge=0)
+    total_latency_ms: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def avg_latency_ms(self) -> float:
+        return self.total_latency_ms / self.count if self.count > 0 else 0.0
+
+
+class CacheStats(BaseModel):
+    """Snapshot of cache performance metrics."""
+
+    model_config = ConfigDict(frozen=True)
+
+    by_strategy: dict[str, StrategyStats] = Field(default_factory=dict)
+    total_requests: int = Field(default=0, ge=0)
+    total_hits: int = Field(default=0, ge=0)
+    total_misses: int = Field(default=0, ge=0)
+    total_errors: int = Field(default=0, ge=0)
+    total_latency_ms: float = Field(default=0.0, ge=0.0)
+    p50_latency_ms: float = Field(default=0.0, ge=0.0)
+    p95_latency_ms: float = Field(default=0.0, ge=0.0)
+    p99_latency_ms: float = Field(default=0.0, ge=0.0)
+    backend_count: int = Field(default=0, ge=0)
+    since: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    until: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def hit_rate(self) -> float:
+        return self.total_hits / self.total_requests if self.total_requests > 0 else 0.0
+
+    @property
+    def miss_rate(self) -> float:
+        return self.total_misses / self.total_requests if self.total_requests > 0 else 0.0
+
+    @property
+    def avg_latency_ms(self) -> float:
+        return self.total_latency_ms / self.total_requests if self.total_requests > 0 else 0.0
+
+    def __str__(self) -> str:
+        return (
+            f"CacheStats(requests={self.total_requests}, "
+            f"hit_rate={self.hit_rate:.1%}, "
+            f"miss_rate={self.miss_rate:.1%}, "
+            f"avg_latency={self.avg_latency_ms:.1f}ms, "
+            f"p50={self.p50_latency_ms:.1f}ms, "
+            f"p95={self.p95_latency_ms:.1f}ms, "
+            f"p99={self.p99_latency_ms:.1f}ms, "
+            f"backend_count={self.backend_count})"
+        )
+
+
 class SearchStrategy(str, Enum):
     """Identifies which tier of the waterfall produced the hit."""
 

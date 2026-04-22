@@ -11,7 +11,7 @@ from medha.interfaces.storage import VectorStorageBackend
 from medha.l1_cache.memory import InMemoryL1Cache
 from medha.l1_cache.redis_adapter import RedisL1Cache
 from medha.logging import setup_logging
-from medha.types import CacheEntry, CacheHit, CacheResult, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheHit, CacheResult, CacheStats, QueryTemplate, SearchStrategy, StrategyStats
 
 _optional: list[str] = []
 
@@ -51,9 +51,21 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.embeddings.cohere_adapter import CohereAdapter
+    _optional.append("CohereAdapter")
+except ImportError:
+    pass
+
+try:
+    from medha.embeddings.gemini_adapter import GeminiAdapter
+    _optional.append("GeminiAdapter")
+except ImportError:
+    pass
+
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
-    "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",
-    "VectorStorageBackend", "InMemoryL1Cache", "RedisL1Cache", "setup_logging",
-    "InMemoryBackend",
+    "CacheResult", "CacheStats", "StrategyStats", "SearchStrategy",
+    "BaseEmbedder", "L1CacheBackend", "VectorStorageBackend",
+    "InMemoryL1Cache", "RedisL1Cache", "setup_logging", "InMemoryBackend",
 ] + _optional

@@ -109,4 +109,5 @@ class TestL1CacheOnRepeat:
         # Second search — should be L1 hit
         hit2 = await medha.search("Get user count")
         assert hit2.strategy != SearchStrategy.NO_MATCH
-        assert medha._stats["l1_hits"] >= 1
+        s = await medha.stats()
+        assert s.total_hits >= 1

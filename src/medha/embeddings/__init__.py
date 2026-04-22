@@ -1,4 +1,4 @@
-"""Embedder adapter implementations (FastEmbed, OpenAI).
+"""Embedder adapter implementations (FastEmbed, OpenAI, Cohere, Gemini).
 
 Lazy imports to avoid pulling in optional dependencies at package level.
 """
@@ -20,4 +20,18 @@ def get_openai_adapter() -> type[BaseEmbedder]:
     return OpenAIAdapter
 
 
-__all__ = ["get_fastembed_adapter", "get_openai_adapter"]
+def get_cohere_adapter() -> type[BaseEmbedder]:
+    """Import and return the CohereAdapter class."""
+    from medha.embeddings.cohere_adapter import CohereAdapter
+
+    return CohereAdapter
+
+
+def get_gemini_adapter() -> type[BaseEmbedder]:
+    """Import and return the GeminiAdapter class."""
+    from medha.embeddings.gemini_adapter import GeminiAdapter
+
+    return GeminiAdapter
+
+
+__all__ = ["get_fastembed_adapter", "get_openai_adapter", "get_cohere_adapter", "get_gemini_adapter"]

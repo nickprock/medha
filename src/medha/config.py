@@ -265,6 +265,21 @@ class Settings(BaseSettings):
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
 
+    # --- Observability ---
+    collect_stats: bool = Field(
+        default=True,
+        description="Enable collection of cache performance statistics.",
+    )
+    stats_max_latency_samples: int = Field(
+        default=10_000,
+        ge=100,
+        le=1_000_000,
+        description=(
+            "Maximum number of per-request latency samples retained for percentile calculation. "
+            "Older samples are evicted when the buffer is full (FIFO)."
+        ),
+    )
+
     # --- Timeouts ---
     embedding_timeout: float | None = Field(
         default=None,

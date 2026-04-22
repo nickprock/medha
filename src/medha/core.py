@@ -9,7 +9,7 @@ import os
 import re
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,11 +22,98 @@ from medha.exceptions import ConfigurationError, EmbeddingError, MedhaError, Sto
 from medha.interfaces.embedder import BaseEmbedder
 from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
-from medha.types import CacheEntry, CacheHit, CacheResult, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheHit, CacheResult, CacheStats, QueryTemplate, SearchStrategy, StrategyStats
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
 from medha.utils.normalization import normalize_question, query_hash, question_hash
 
 logger = logging.getLogger(__name__)
+
+_HIT_STRATEGIES = frozenset({
+    SearchStrategy.L1_CACHE,
+    SearchStrategy.TEMPLATE_MATCH,
+    SearchStrategy.EXACT_MATCH,
+    SearchStrategy.SEMANTIC_MATCH,
+    SearchStrategy.FUZZY_MATCH,
+})
+
+
+class _StatsCollector:
+    """Thread-safe async collector for cache performance metrics."""
+
+    def __init__(self, enabled: bool = True, max_latency_samples: int = 10_000) -> None:
+        self._enabled = enabled
+        self._max_latency_samples = max_latency_samples
+        self._lock = asyncio.Lock()
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self._total_requests = 0
+        self._total_hits = 0
+        self._total_misses = 0
+        self._total_errors = 0
+        self._total_latency_ms = 0.0
+        self._by_strategy: dict[str, dict[str, float | int]] = {}
+        self._latencies: deque[float] = deque(maxlen=self._max_latency_samples)
+        self._since = datetime.now(timezone.utc)
+
+    async def record(self, strategy: SearchStrategy, latency_ms: float) -> None:
+        if not self._enabled:
+            return
+        async with self._lock:
+            self._total_requests += 1
+            self._total_latency_ms += latency_ms
+            self._latencies.append(latency_ms)
+
+            key = strategy.value
+            if key not in self._by_strategy:
+                self._by_strategy[key] = {"count": 0, "total_latency_ms": 0.0}
+            self._by_strategy[key]["count"] = int(self._by_strategy[key]["count"]) + 1
+            self._by_strategy[key]["total_latency_ms"] = float(self._by_strategy[key]["total_latency_ms"]) + latency_ms
+
+            if strategy in _HIT_STRATEGIES:
+                self._total_hits += 1
+            elif strategy == SearchStrategy.ERROR:
+                self._total_errors += 1
+            else:
+                self._total_misses += 1
+
+    async def snapshot(self, backend_count: int) -> CacheStats:
+        async with self._lock:
+            until = datetime.now(timezone.utc)
+            sorted_latencies = sorted(self._latencies)
+            n = len(sorted_latencies)
+
+            def _pct(p: float) -> float:
+                if n == 0:
+                    return 0.0
+                return sorted_latencies[min(int(n * p), n - 1)]
+
+            by_strategy = {
+                k: StrategyStats(
+                    count=int(v["count"]),
+                    total_latency_ms=float(v["total_latency_ms"]),
+                )
+                for k, v in self._by_strategy.items()
+            }
+
+            return CacheStats(
+                by_strategy=by_strategy,
+                total_requests=self._total_requests,
+                total_hits=self._total_hits,
+                total_misses=self._total_misses,
+                total_errors=self._total_errors,
+                total_latency_ms=self._total_latency_ms,
+                p50_latency_ms=_pct(0.50),
+                p95_latency_ms=_pct(0.95),
+                p99_latency_ms=_pct(0.99),
+                backend_count=backend_count,
+                since=self._since,
+                until=until,
+            )
+
+    async def reset(self) -> None:
+        async with self._lock:
+            self._reset_state()
 
 
 class Medha:
@@ -100,22 +187,10 @@ class Medha:
         self._param_extractor = ParameterExtractor()
 
         # Stats
-        self._stats = {
-            "l1_hits": 0,
-            "template_hits": 0,
-            "exact_hits": 0,
-            "semantic_hits": 0,
-            "fuzzy_hits": 0,
-            "misses": 0,
-            "errors": 0,
-        }
-        self._tier_latencies: dict[str, dict[str, float]] = {
-            "l1_cache":  {"total_ms": 0.0, "calls": 0},
-            "template":  {"total_ms": 0.0, "calls": 0},
-            "exact":     {"total_ms": 0.0, "calls": 0},
-            "semantic":  {"total_ms": 0.0, "calls": 0},
-            "fuzzy":     {"total_ms": 0.0, "calls": 0},
-        }
+        self._stats = _StatsCollector(
+            enabled=self._settings.collect_stats,
+            max_latency_samples=self._settings.stats_max_latency_samples,
+        )
         self._total_stored = 0
         self._warm_loaded = 0
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -269,12 +344,18 @@ class Medha:
             CacheHit with the matched query, confidence, and strategy.
             Returns CacheHit(strategy=NO_MATCH) if no tier matches.
         """
+        t0 = time.monotonic()
+        result = await self._search_impl(question)
+        latency_ms = (time.monotonic() - t0) * 1000
+        await self._stats.record(result.strategy, latency_ms)
+        return result
+
+    async def _search_impl(self, question: str) -> CacheHit:
         try:
             if not question or not question.strip():
                 logger.warning("Search called with empty question")
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
-            # NEW: length guard
             if len(question) > self._settings.max_question_length:
                 logger.warning(
                     "Search rejected: question length %d exceeds max %d",
@@ -286,23 +367,15 @@ class Medha:
             logger.debug("Search started for: '%s'", question[:80])
 
             # --- Tier 0: L1 Cache ---
-            _t = time.perf_counter()
             l1_hit = await self._check_l1_cache(question)
-            self._tier_latencies["l1_cache"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["l1_cache"]["calls"] += 1
             if l1_hit:
-                self._stats["l1_hits"] += 1
                 logger.debug("Tier 0 L1 cache HIT for: '%s'", question[:50])
                 return l1_hit
             logger.debug("Tier 0 L1 cache MISS")
 
             # --- Tier 1: Template Matching ---
-            _t = time.perf_counter()
             template_hit = await self._search_templates(question)
-            self._tier_latencies["template"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["template"]["calls"] += 1
             if template_hit:
-                self._stats["template_hits"] += 1
                 await self._store_in_l1(question, template_hit)
                 logger.debug(
                     "Tier 1 template HIT: template='%s', confidence=%.3f",
@@ -315,28 +388,18 @@ class Medha:
             # --- Get embedding (shared by Tier 2, 3) ---
             embedding = await self._get_embedding(question)
             if embedding is None:
-                self._stats["errors"] += 1
                 logger.error("Embedding failed, aborting search for: '%s'", question[:50])
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
             # --- Tier 2 + 3: Exact and Semantic in parallel ---
-            # Both tiers query the same vector backend with different thresholds.
             # Running them concurrently reduces wall-clock latency from
             # ~(t_exact + t_semantic) to ~max(t_exact, t_semantic).
-            _t = time.perf_counter()
             exact_hit, semantic_hit = await asyncio.gather(
                 self._search_exact(embedding),
                 self._search_semantic(embedding),
             )
-            _elapsed_ms = (time.perf_counter() - _t) * 1000
-            # Both tiers share the same wall-clock window; record individually.
-            self._tier_latencies["exact"]["total_ms"] += _elapsed_ms
-            self._tier_latencies["exact"]["calls"] += 1
-            self._tier_latencies["semantic"]["total_ms"] += _elapsed_ms
-            self._tier_latencies["semantic"]["calls"] += 1
 
             if exact_hit:
-                self._stats["exact_hits"] += 1
                 await self._store_in_l1(question, exact_hit)
                 logger.debug(
                     "Tier 2 exact HIT: confidence=%.4f, query='%s'",
@@ -347,7 +410,6 @@ class Medha:
             logger.debug("Tier 2 exact MISS (threshold=%.2f)", self._settings.score_threshold_exact)
 
             if semantic_hit:
-                self._stats["semantic_hits"] += 1
                 await self._store_in_l1(question, semantic_hit)
                 logger.debug(
                     "Tier 3 semantic HIT: confidence=%.4f, query='%s'",
@@ -358,27 +420,18 @@ class Medha:
             logger.debug("Tier 3 semantic MISS (threshold=%.2f)", self._settings.score_threshold_semantic)
 
             # --- Tier 4: Fuzzy Matching ---
-            _t = time.perf_counter()
             fuzzy_hit = await self._search_fuzzy(question, embedding)
-            self._tier_latencies["fuzzy"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["fuzzy"]["calls"] += 1
             if fuzzy_hit:
-                self._stats["fuzzy_hits"] += 1
                 await self._store_in_l1(question, fuzzy_hit)
-                logger.debug(
-                    "Tier 4 fuzzy HIT: confidence=%.4f", fuzzy_hit.confidence
-                )
+                logger.debug("Tier 4 fuzzy HIT: confidence=%.4f", fuzzy_hit.confidence)
                 return fuzzy_hit
             logger.debug("Tier 4 fuzzy MISS (threshold=%.1f)", self._settings.score_threshold_fuzzy)
 
-            # --- No match ---
-            self._stats["misses"] += 1
             logger.debug("All tiers exhausted, NO_MATCH for: '%s'", question[:50])
             return CacheHit(strategy=SearchStrategy.NO_MATCH)
 
         except Exception as e:
             logger.error("Search failed for '%s': %s", question[:50], e, exc_info=True)
-            self._stats["errors"] += 1
             return CacheHit(strategy=SearchStrategy.ERROR)
 
     # --- Tier Implementations ---
@@ -744,7 +797,7 @@ class Medha:
 
             # Single batch embedding call — much faster than N sequential calls
             try:
-                coro = self._embedder.aembed_batch(normalized_questions)
+                coro = self._embedder.aembed_batch(normalized_questions, is_document=True)
                 if self._settings.embedding_timeout is not None:
                     coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
                 embeddings = await coro
@@ -1112,7 +1165,8 @@ class Medha:
         # Single batch embedding call instead of N sequential aembed() calls
         try:
             coro = self._embedder.aembed_batch(
-                [embed_text for _, _, embed_text in items]
+                [embed_text for _, _, embed_text in items],
+                is_document=True,
             )
             if self._settings.embedding_timeout is not None:
                 coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
@@ -1245,43 +1299,27 @@ class Medha:
 
     # --- Statistics & Monitoring ---
 
-    @property
-    def stats(self) -> dict[str, Any]:
-        """Return cache performance statistics.
+    async def stats(self, collection_name: str | None = None) -> CacheStats:
+        """Return a frozen snapshot of cache performance metrics.
 
-        Includes per-tier hit counts, average latency in milliseconds,
-        total entries stored, and warm-loaded count.
+        Args:
+            collection_name: Collection to count entries for. None = main collection.
+
+        Returns:
+            CacheStats with hit/miss rates, latency percentiles, and backend count.
         """
-        total = sum(self._stats.values())
-        hit_count = total - self._stats["misses"] - self._stats["errors"]
-        tier_latencies = {
-            tier: {
-                "avg_ms": round(data["total_ms"] / data["calls"], 3) if data["calls"] > 0 else 0.0,
-                "total_ms": round(data["total_ms"], 3),
-                "calls": data["calls"],
-            }
-            for tier, data in self._tier_latencies.items()
-        }
-        return {
-            "total_requests": total,
-            "hit_rate": (hit_count / total * 100) if total > 0 else 0.0,
-            "by_strategy": dict(self._stats),
-            "tier_latencies_ms": tier_latencies,
-            "l1_cache_size": self._l1_backend.size,
-            "embedding_cache_size": len(self._embedding_cache),
-            "templates_loaded": len(self._templates),
-            "total_stored": self._total_stored,
-            "warm_loaded": self._warm_loaded,
-        }
+        backend_count = await self._backend.count(collection_name or self._collection_name)
+        return await self._stats.snapshot(backend_count)
+
+    async def reset_stats(self) -> None:
+        """Reset all collected statistics to zero."""
+        await self._stats.reset()
 
     async def clear_caches(self) -> None:
         """Clear all caches (L1, embedding). Backend data is preserved."""
         await self._l1_backend.clear()
         self._embedding_cache.clear()
-        self._stats = {k: 0 for k in self._stats}
-        for data in self._tier_latencies.values():
-            data["total_ms"] = 0.0
-            data["calls"] = 0
+        await self._stats.reset()
         self._total_stored = 0
         self._warm_loaded = 0
         logger.info("In-memory caches cleared")
