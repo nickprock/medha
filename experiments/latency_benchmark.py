@@ -9,8 +9,8 @@ Measures:
 At configurable collection sizes (default: 100, 1000, 10000).
 
 Backend options:
-    --backend qdrant   QdrantBackend with HNSW (default, recommended for n > 10k)
-    --backend memory   InMemoryBackend with linear scan (no Qdrant needed, good for n < 10k)
+    --backend memory   InMemoryBackend with linear scan (default in 0.3.0, good for n < 10k)
+    --backend qdrant   QdrantBackend with HNSW (requires medha-archai[qdrant], recommended for n > 10k)
 
 Usage:
     python experiments/latency_benchmark.py --sizes 100,1000,10000
@@ -217,7 +217,8 @@ async def benchmark(
             # Fast for small collections; compare with "qdrant" at large n.
             settings = Settings(backend_type="memory")
         else:
-            # QdrantBackend (default): HNSW O(log n), supports quantization.
+            # QdrantBackend: HNSW O(log n), supports quantization.
+            # Richiede: pip install medha-archai[qdrant]
             settings = Settings(backend_type="qdrant", qdrant_mode="memory")
         medha = Medha(f"bench_{size}", embedder=embedder, settings=settings)
         await medha.start()
@@ -302,12 +303,12 @@ def main():
     parser.add_argument(
         "--backend",
         type=str,
-        default="qdrant",
+        default="memory",
         choices=["qdrant", "memory"],
         help=(
-            "Vector backend to use: 'qdrant' (HNSW, default) or 'memory' "
-            "(linear scan, no Qdrant required). Use 'memory' to benchmark "
-            "InMemoryBackend or to run without infrastructure."
+            "Vector backend to use: 'memory' (linear scan, default backend in 0.3.0) or "
+            "'qdrant' (HNSW, requires medha-archai[qdrant]). Use 'qdrant' to benchmark "
+            "HNSW performance at large collection sizes."
         ),
     )
     args = parser.parse_args()

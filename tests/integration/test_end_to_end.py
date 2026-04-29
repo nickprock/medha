@@ -51,8 +51,7 @@ class TestStoreSQLAndRetrieve:
         )
         assert ok is True
 
-        medha._l1_cache.clear()
-        medha._embedding_cache.clear()
+        await medha.clear_caches()
 
         # "Number of users" has ~0.90 cosine sim with "How many users are there"
         hit = await medha.search("Number of users")
@@ -72,8 +71,7 @@ class TestStoreCypherAndRetrieve:
         )
         assert ok is True
 
-        medha._l1_cache.clear()
-        medha._embedding_cache.clear()
+        await medha.clear_caches()
 
         hit = await medha.search("Find John's friends")
         assert hit.strategy == SearchStrategy.EXACT_MATCH
@@ -86,8 +84,7 @@ class TestMultipleStoresAndRanking:
         await medha.store("List all products", "SELECT * FROM products")
         await medha.store("Show employee names", "SELECT name FROM employees")
 
-        medha._l1_cache.clear()
-        medha._embedding_cache.clear()
+        await medha.clear_caches()
 
         # "How many users exist" has ~0.94 cosine sim with "How many users are there"
         hit = await medha.search("How many users exist")

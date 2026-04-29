@@ -27,7 +27,7 @@ def _decode_vector(s: str) -> list[float]:
     return [float(x) for x in s.strip("[]").split(",")]
 
 
-class VectorChordBackend(VectorStorageBackend, _AsyncpgBackendMixin):
+class VectorChordBackend(_AsyncpgBackendMixin, VectorStorageBackend):
     """PostgreSQL + VectorChord backend using vchordrq index with RaBitQ quantization.
 
     Drop-in replacement for PgVectorBackend. Requires asyncpg (no pgvector Python package).

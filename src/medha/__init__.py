@@ -58,6 +58,12 @@ except ImportError:
     pass
 
 try:
+    from medha.backends.azure_search import AzureSearchBackend
+    _optional.append("AzureSearchBackend")
+except ImportError:
+    pass
+
+try:
     from medha.embeddings.cohere_adapter import CohereAdapter
     _optional.append("CohereAdapter")
 except ImportError:

@@ -1,4 +1,4 @@
-"""Unit tests for PgVectorBackend (mocked asyncpg — no real PostgreSQL required)."""
+"""Unit tests for VectorChordBackend (mocked asyncpg — no real PostgreSQL required)."""
 
 import hashlib
 import uuid
@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 asyncpg = pytest.importorskip("asyncpg")
-pytest.importorskip("pgvector")
 
 from medha.config import Settings
 from medha.exceptions import ConfigurationError, StorageError
@@ -40,14 +39,13 @@ def _make_entry(
 
 
 def _make_pg_error(msg: str = "simulated postgres error") -> asyncpg.PostgresError:
-    """Create an asyncpg.PostgresError without triggering its custom __init__."""
     err = asyncpg.PostgresError.__new__(asyncpg.PostgresError)
     Exception.__init__(err, msg)
     return err
 
 
-def _pg_settings(**overrides) -> Settings:
-    return Settings(backend_type="pgvector", **overrides)
+def _vc_settings(**overrides) -> Settings:
+    return Settings(backend_type="vectorchord", **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -57,19 +55,15 @@ def _pg_settings(**overrides) -> Settings:
 
 @pytest.fixture
 def mock_pool():
-    """Mocked asyncpg pool + connection."""
     pool = MagicMock()
     conn = AsyncMock()
 
-    # asyncpg uses `async with pool.acquire() as conn` — acquire() is NOT awaited,
-    # it returns a context manager whose __aenter__ / __aexit__ are awaited.
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=conn)
     ctx.__aexit__ = AsyncMock(return_value=False)
     pool.acquire = MagicMock(return_value=ctx)
     pool.close = AsyncMock()
 
-    # Default return values that won't crash callers
     conn.fetch.return_value = []
     conn.fetchrow.return_value = [0]
     conn.execute.return_value = "UPDATE 0"
@@ -78,16 +72,15 @@ def mock_pool():
 
 
 @pytest.fixture
-async def pg_backend(mock_pool):
-    """PgVectorBackend with fully mocked asyncpg pool."""
-    from medha.backends.pgvector import PgVectorBackend
+async def vc_backend(mock_pool):
+    from medha.backends.vectorchord import VectorChordBackend
 
     pool, conn = mock_pool
     with patch(
-        "medha.backends.pgvector.asyncpg.create_pool",
+        "medha.backends.vectorchord.asyncpg.create_pool",
         new=AsyncMock(return_value=pool),
     ):
-        b = PgVectorBackend(_pg_settings())
+        b = VectorChordBackend(_vc_settings())
         await b.connect()
         yield b, conn
     await b.close()
@@ -99,11 +92,10 @@ async def pg_backend(mock_pool):
 
 
 async def test_connect_creates_pool(mock_pool):
-    """asyncpg.create_pool is called with individual connection fields."""
-    from medha.backends.pgvector import PgVectorBackend
+    from medha.backends.vectorchord import VectorChordBackend
 
     pool, _ = mock_pool
-    settings = _pg_settings(
+    settings = _vc_settings(
         pg_host="db-host",
         pg_port=5432,
         pg_database="mydb",
@@ -111,10 +103,10 @@ async def test_connect_creates_pool(mock_pool):
         pg_password="secret",
     )
     with patch(
-        "medha.backends.pgvector.asyncpg.create_pool",
+        "medha.backends.vectorchord.asyncpg.create_pool",
         new=AsyncMock(return_value=pool),
     ) as mock_cp:
-        b = PgVectorBackend(settings)
+        b = VectorChordBackend(settings)
         await b.connect()
         await b.close()
 
@@ -127,24 +119,22 @@ async def test_connect_creates_pool(mock_pool):
 
 
 async def test_connect_uses_dsn_when_set(mock_pool):
-    """When pg_dsn is set, passes dsn= instead of individual fields."""
-    from medha.backends.pgvector import PgVectorBackend
+    from medha.backends.vectorchord import VectorChordBackend
 
     pool, _ = mock_pool
     dsn = "postgresql://user:pw@host:5432/db"
-    settings = _pg_settings(pg_dsn=dsn)
+    settings = _vc_settings(pg_dsn=dsn)
     with patch(
-        "medha.backends.pgvector.asyncpg.create_pool",
+        "medha.backends.vectorchord.asyncpg.create_pool",
         new=AsyncMock(return_value=pool),
     ) as mock_cp:
-        b = PgVectorBackend(settings)
+        b = VectorChordBackend(settings)
         await b.connect()
         await b.close()
 
     kwargs = mock_cp.call_args.kwargs
     assert kwargs["dsn"] == dsn
     assert "host" not in kwargs
-    assert "database" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -152,26 +142,24 @@ async def test_connect_uses_dsn_when_set(mock_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_initialize_executes_ddl(pg_backend):
-    """initialize() calls CREATE EXTENSION, CREATE TABLE, and CREATE INDEX."""
-    b, conn = pg_backend
+async def test_initialize_executes_ddl(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
 
     all_sql = " ".join(str(c.args[0]) for c in conn.execute.call_args_list)
     assert "CREATE EXTENSION" in all_sql
+    assert "vectorchord" in all_sql.lower()
     assert "CREATE TABLE" in all_sql
     assert "CREATE INDEX" in all_sql
-    assert "hnsw" in all_sql
+    assert "vchordrq" in all_sql
     assert "query_hash" in all_sql
-    assert "template_id" in all_sql
 
 
-async def test_initialize_idempotent(pg_backend):
-    """Second initialize() call on same collection skips DDL."""
-    b, conn = pg_backend
+async def test_initialize_idempotent(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.execute.reset_mock()
-    await b.initialize(COLL, DIM)  # should be a no-op
+    await b.initialize(COLL, DIM)
 
     assert conn.execute.call_count == 0
 
@@ -181,9 +169,8 @@ async def test_initialize_idempotent(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_upsert_calls_executemany(pg_backend):
-    """upsert() calls conn.executemany with the correct number of tuples."""
-    b, conn = pg_backend
+async def test_upsert_calls_executemany(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
 
     entries = [_make_entry() for _ in range(3)]
@@ -194,9 +181,8 @@ async def test_upsert_calls_executemany(pg_backend):
     assert len(rows) == 3
 
 
-async def test_upsert_empty_list_no_call(pg_backend):
-    """upsert() with empty list never calls executemany."""
-    b, conn = pg_backend
+async def test_upsert_empty_list_no_call(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     await b.upsert(COLL, [])
     conn.executemany.assert_not_awaited()
@@ -207,9 +193,8 @@ async def test_upsert_empty_list_no_call(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_search_executes_correct_sql(pg_backend):
-    """search() passes SQL with <=> operator, WHERE, ORDER BY, LIMIT."""
-    b, conn = pg_backend
+async def test_search_executes_correct_sql(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetch.return_value = []
 
@@ -228,9 +213,8 @@ async def test_search_executes_correct_sql(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_count_executes_count_sql(pg_backend):
-    """count() executes SELECT COUNT(*) and returns the integer value."""
-    b, conn = pg_backend
+async def test_count_executes_count_sql(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetchrow.return_value = [42]
 
@@ -247,16 +231,14 @@ async def test_count_executes_count_sql(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_delete_executes_delete_sql(pg_backend):
-    """delete() executes DELETE ... WHERE id = ANY(...)."""
-    b, conn = pg_backend
+async def test_delete_executes_delete_sql(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     ids = [str(uuid.uuid4()), str(uuid.uuid4())]
 
     await b.delete(COLL, ids)
 
     conn.execute.assert_awaited()
-    # Find the DELETE call among all execute calls
     delete_calls = [
         c for c in conn.execute.call_args_list if "DELETE" in str(c.args[0])
     ]
@@ -264,9 +246,8 @@ async def test_delete_executes_delete_sql(pg_backend):
     assert "ANY" in delete_calls[0].args[0]
 
 
-async def test_delete_empty_list_no_call(pg_backend):
-    """delete() with empty list is a no-op."""
-    b, conn = pg_backend
+async def test_delete_empty_list_no_call(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.execute.reset_mock()
 
@@ -280,15 +261,14 @@ async def test_delete_empty_list_no_call(pg_backend):
 
 
 async def test_close_closes_pool(mock_pool):
-    """close() calls pool.close() and sets pool to None."""
-    from medha.backends.pgvector import PgVectorBackend
+    from medha.backends.vectorchord import VectorChordBackend
 
     pool, _ = mock_pool
     with patch(
-        "medha.backends.pgvector.asyncpg.create_pool",
+        "medha.backends.vectorchord.asyncpg.create_pool",
         new=AsyncMock(return_value=pool),
     ):
-        b = PgVectorBackend(_pg_settings())
+        b = VectorChordBackend(_vc_settings())
         await b.connect()
         assert b._pool is not None
         await b.close()
@@ -304,13 +284,12 @@ async def test_close_closes_pool(mock_pool):
 
 
 async def test_not_connected_raises():
-    """All data methods raise StorageError when pool is None."""
-    from medha.backends.pgvector import PgVectorBackend
+    from medha.backends.vectorchord import VectorChordBackend
 
-    b = PgVectorBackend.__new__(PgVectorBackend)
+    b = VectorChordBackend.__new__(VectorChordBackend)
     b._pool = None
     b._initialized_tables = set()
-    b._settings = _pg_settings()
+    b._settings = _vc_settings()
 
     with pytest.raises(StorageError, match="connect()"):
         await b.initialize(COLL, DIM)
@@ -340,12 +319,11 @@ async def test_not_connected_raises():
 
 
 async def test_missing_deps_raises():
-    """ConfigurationError is raised when HAS_PGVECTOR is False."""
-    with patch("medha.backends.pgvector.HAS_PGVECTOR", False):
-        from medha.backends.pgvector import PgVectorBackend
+    with patch("medha.backends.vectorchord.HAS_VECTORCHORD", False):
+        from medha.backends.vectorchord import VectorChordBackend
 
         with pytest.raises(ConfigurationError, match="pip install medha-archai"):
-            PgVectorBackend()
+            VectorChordBackend()
 
 
 # ---------------------------------------------------------------------------
@@ -354,18 +332,12 @@ async def test_missing_deps_raises():
 
 
 def test_table_name_sanitization():
-    """Special chars in collection name are replaced with underscores."""
-    from medha.backends.pgvector import PgVectorBackend
+    from medha.backends.vectorchord import VectorChordBackend
 
-    # Create instance bypassing __init__ checks
-    b = PgVectorBackend.__new__(PgVectorBackend)
-    b._settings = _pg_settings(pg_table_prefix="medha")
+    b = VectorChordBackend.__new__(VectorChordBackend)
+    b._settings = _vc_settings(pg_table_prefix="medha")
 
     assert b._table_name("my_cache") == "medha_my_cache"
-    # __medha_templates_x: leading __ stays as __ (underscores are allowed)
-    result = b._table_name("__medha_templates_my_cache")
-    assert result == "medha___medha_templates_my_cache"
-    # Hyphens and dots replaced
     assert b._table_name("my-cache.v2") == "medha_my_cache_v2"
 
 
@@ -374,25 +346,23 @@ def test_table_name_sanitization():
 # ---------------------------------------------------------------------------
 
 
-async def test_postgres_error_wrapped(pg_backend):
-    """asyncpg.PostgresError is wrapped in StorageError."""
-    b, conn = pg_backend
+async def test_postgres_error_wrapped(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
 
     conn.fetch.side_effect = _make_pg_error("relation does not exist")
 
-    with pytest.raises(StorageError, match="PgVector operation failed"):
+    with pytest.raises(StorageError, match="VectorChord operation failed"):
         await b.search(COLL, [0.1] * DIM)
 
 
-async def test_postgres_error_on_upsert_wrapped(pg_backend):
-    """asyncpg.PostgresError during upsert is wrapped in StorageError."""
-    b, conn = pg_backend
+async def test_postgres_error_on_upsert_wrapped(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
 
     conn.executemany.side_effect = _make_pg_error("unique violation")
 
-    with pytest.raises(StorageError, match="PgVector operation failed"):
+    with pytest.raises(StorageError, match="VectorChord operation failed"):
         await b.upsert(COLL, [_make_entry()])
 
 
@@ -401,8 +371,8 @@ async def test_postgres_error_on_upsert_wrapped(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_scroll_executes_sql(pg_backend):
-    b, conn = pg_backend
+async def test_scroll_executes_sql(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetch.return_value = []
 
@@ -421,9 +391,10 @@ async def test_scroll_executes_sql(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_search_by_query_hash_found(pg_backend):
-    b, conn = pg_backend
+async def test_search_by_query_hash_found(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
+
     row = {
         "id": str(uuid.uuid4()),
         "original_question": "test",
@@ -444,8 +415,8 @@ async def test_search_by_query_hash_found(pg_backend):
     assert result.generated_query == "SELECT 42"
 
 
-async def test_search_by_query_hash_not_found(pg_backend):
-    b, conn = pg_backend
+async def test_search_by_query_hash_not_found(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetchrow.return_value = None
 
@@ -459,8 +430,8 @@ async def test_search_by_query_hash_not_found(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_update_usage_count_executes_update(pg_backend):
-    b, conn = pg_backend
+async def test_update_usage_count_executes_update(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.execute.return_value = "UPDATE 1"
 
@@ -471,12 +442,12 @@ async def test_update_usage_count_executes_update(pg_backend):
 
 
 # ---------------------------------------------------------------------------
-# find_expired (PgVector-specific)
+# find_expired (VectorChord-specific)
 # ---------------------------------------------------------------------------
 
 
-async def test_find_expired_executes_sql(pg_backend):
-    b, conn = pg_backend
+async def test_find_expired_executes_sql(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetch.return_value = []
 
@@ -493,8 +464,8 @@ async def test_find_expired_executes_sql(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_drop_collection_executes_drop(pg_backend):
-    b, conn = pg_backend
+async def test_drop_collection_executes_drop(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.execute.reset_mock()
 
@@ -509,8 +480,8 @@ async def test_drop_collection_executes_drop(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_find_by_query_hash(pg_backend):
-    b, conn = pg_backend
+async def test_find_by_query_hash(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     eid = str(uuid.uuid4())
     conn.fetch.return_value = [{"id": eid}]
@@ -525,8 +496,8 @@ async def test_find_by_query_hash(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_find_by_template_id(pg_backend):
-    b, conn = pg_backend
+async def test_find_by_template_id(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     eids = [str(uuid.uuid4()), str(uuid.uuid4())]
     conn.fetch.return_value = [{"id": e} for e in eids]
@@ -541,8 +512,8 @@ async def test_find_by_template_id(pg_backend):
 # ---------------------------------------------------------------------------
 
 
-async def test_search_by_normalized_question_found(pg_backend):
-    b, conn = pg_backend
+async def test_search_by_normalized_question_found(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     row = {
         "id": str(uuid.uuid4()),
@@ -564,8 +535,8 @@ async def test_search_by_normalized_question_found(pg_backend):
     assert result.generated_query == "SELECT 1"
 
 
-async def test_search_by_normalized_question_not_found(pg_backend):
-    b, conn = pg_backend
+async def test_search_by_normalized_question_not_found(vc_backend):
+    b, conn = vc_backend
     await b.initialize(COLL, DIM)
     conn.fetchrow.return_value = None
 

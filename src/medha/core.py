@@ -235,6 +235,9 @@ class Medha:
         elif bt == "redis":
             from medha.backends.redis_vector import RedisVectorBackend
             return RedisVectorBackend(self._settings)
+        elif bt == "azure-search":
+            from medha.backends.azure_search import AzureSearchBackend
+            return AzureSearchBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
@@ -1078,7 +1081,12 @@ class Medha:
                 f"Failed to load templates from '{file_path}': {e}"
             ) from e
 
-    async def warm_from_file(self, path: str) -> int:
+    async def warm_from_file(
+        self,
+        path: str,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+    ) -> int:
         """Warm the cache from a JSON or JSONL file.
 
         Supports two formats:
@@ -1089,6 +1097,8 @@ class Medha:
 
         Args:
             path: Path to the file.
+            batch_size: Override the default batch size for chunked upserts.
+            on_progress: Optional callback ``(done, total)`` called after each chunk.
 
         Returns:
             Number of entries successfully stored.
@@ -1109,9 +1119,9 @@ class Medha:
                 content = f.read().strip()
 
             if content.startswith("["):
-                entries = json.loads(content)
+                data = json.loads(content)
             else:
-                entries = [
+                data = [
                     json.loads(line)
                     for line in content.splitlines()
                     if line.strip()
@@ -1121,18 +1131,283 @@ class Medha:
         except Exception as e:
             raise MedhaError(f"warm_from_file: cannot read '{path}': {e}") from e
 
-        if not entries:
+        if not data:
             logger.warning("warm_from_file: no entries found in '%s'", path)
             return 0
 
-        ok = await self.store_batch(entries)
-        count = len(entries) if ok else 0
-        if ok:
+        count = await self.store_many(data, batch_size=batch_size, on_progress=on_progress)
+        if count:
             self._warm_loaded += count
             logger.info("Cache warmed: %d entries from '%s'", count, path)
-        else:
-            logger.error("warm_from_file: store_batch failed for '%s'", path)
         return count
+
+    def _build_cache_entries(
+        self,
+        chunk: list[dict[str, Any]],
+        embeddings: list[list[float]],
+        resolved_ttl: int | None,
+    ) -> list[CacheEntry]:
+        entries = []
+        for item, embedding in zip(chunk, embeddings, strict=False):
+            question = item["question"]
+            normalized = normalize_question(question)
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=resolved_ttl)
+                if resolved_ttl is not None
+                else None
+            )
+            entries.append(CacheEntry(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                original_question=question,
+                normalized_question=normalized,
+                generated_query=item["generated_query"],
+                query_hash=query_hash(item["generated_query"]),
+                response_summary=item.get("response_summary"),
+                template_id=item.get("template_id"),
+                expires_at=expires_at,
+            ))
+        return entries
+
+    async def store_many(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
+    ) -> int:
+        """Store multiple entries using chunked, optionally concurrent embedding.
+
+        Fail-fast: raises ValueError if any entry is missing 'question' or
+        'generated_query' before any embedding or upsert is performed.
+
+        Args:
+            entries: List of dicts, each with at minimum 'question' and
+                'generated_query'. Optional keys: 'response_summary', 'template_id'.
+            batch_size: Chunk size. Defaults to settings.batch_size.
+            on_progress: Optional callback ``(done: int, total: int)`` called
+                after each chunk is upserted.
+            ttl: TTL in seconds for the new entries. _UNSET = use settings default.
+
+        Returns:
+            Number of entries stored.
+
+        Raises:
+            ValueError: If any entry is missing required keys.
+        """
+        for i, item in enumerate(entries):
+            if not item.get("question", "").strip():
+                raise ValueError(f"store_many: entry {i} missing or empty 'question'")
+            if not item.get("generated_query", "").strip():
+                raise ValueError(f"store_many: entry {i} missing or empty 'generated_query'")
+
+        if not entries:
+            return 0
+
+        chunk_size = batch_size or self._settings.batch_size
+        total = len(entries)
+        done = 0
+        resolved_ttl = ttl if ttl is not _UNSET else self._settings.default_ttl_seconds
+        concurrency = self._settings.batch_embed_concurrency
+        chunks = [entries[i: i + chunk_size] for i in range(0, total, chunk_size)]
+
+        async def _embed_chunk(chunk: list[dict[str, Any]]) -> list[list[float]]:
+            normalized = [normalize_question(item["question"]) for item in chunk]
+            coro = self._embedder.aembed_batch(normalized, is_document=True)
+            if self._settings.embedding_timeout is not None:
+                coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
+            return await coro
+
+        async def _upsert_chunk(chunk: list[dict[str, Any]], embeddings: list[list[float]]) -> None:
+            cache_entries = self._build_cache_entries(chunk, embeddings, resolved_ttl)
+            await self._backend.upsert(self._collection_name, cache_entries)
+            for item in chunk:
+                await self._store_in_l1(
+                    item["question"],
+                    CacheHit(
+                        generated_query=item["generated_query"],
+                        response_summary=item.get("response_summary"),
+                        confidence=1.0,
+                        strategy=SearchStrategy.EXACT_MATCH,
+                        template_used=item.get("template_id"),
+                    ),
+                )
+
+        if concurrency > 1:
+            for group_start in range(0, len(chunks), concurrency):
+                group = chunks[group_start: group_start + concurrency]
+                embeddings_list: list[list[list[float]]] = await asyncio.gather(
+                    *[_embed_chunk(chunk) for chunk in group]
+                )
+                for chunk, embeddings in zip(group, embeddings_list, strict=False):
+                    await _upsert_chunk(chunk, embeddings)
+                    done += len(chunk)
+                    if on_progress is not None:
+                        on_progress(done, total)
+        else:
+            for chunk in chunks:
+                embeddings = await _embed_chunk(chunk)
+                await _upsert_chunk(chunk, embeddings)
+                done += len(chunk)
+                if on_progress is not None:
+                    on_progress(done, total)
+
+        self._total_stored += total
+        logger.info("store_many: stored %d entries in %d chunks", total, len(chunks))
+        return total
+
+    async def warm_from_dataframe(
+        self,
+        df: Any,
+        *,
+        question_col: str = "question",
+        query_col: str = "generated_query",
+        response_col: str = "response_summary",
+        template_col: str | None = None,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
+    ) -> int:
+        """Warm the cache from a pandas DataFrame.
+
+        Args:
+            df: A ``pandas.DataFrame`` with at least the question and query columns.
+            question_col: Column name for questions.
+            query_col: Column name for generated queries.
+            response_col: Column name for optional response summaries.
+            template_col: Column name for optional template IDs.
+            batch_size: Override chunk size.
+            on_progress: Optional ``(done, total)`` callback.
+            ttl: TTL for new entries.
+
+        Returns:
+            Number of entries stored.
+
+        Raises:
+            ConfigurationError: If pandas is not installed.
+        """
+        try:
+            import pandas  # noqa: F401
+        except ImportError as exc:
+            raise ConfigurationError(
+                "warm_from_dataframe requires pandas: pip install pandas"
+            ) from exc
+
+        rows: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            item: dict[str, Any] = {
+                "question": row[question_col],
+                "generated_query": row[query_col],
+            }
+            if response_col in df.columns:
+                val = row.get(response_col)
+                if val is not None:
+                    item["response_summary"] = val
+            if template_col is not None and template_col in df.columns:
+                val = row.get(template_col)
+                if val is not None:
+                    item["template_id"] = val
+            rows.append(item)
+
+        return await self.store_many(rows, batch_size=batch_size, on_progress=on_progress, ttl=ttl)
+
+    async def export_to_dataframe(
+        self,
+        collection_name: str | None = None,
+        *,
+        include_vectors: bool = False,
+    ) -> Any:
+        """Export all cache entries to a pandas DataFrame.
+
+        Scrolls the entire collection in pages of 500 and returns the result
+        as a DataFrame where each row is the ``model_dump()`` of a CacheResult.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+            include_vectors: Whether to request vectors from the backend.
+
+        Returns:
+            ``pandas.DataFrame`` with one row per cache entry.
+
+        Raises:
+            ConfigurationError: If pandas is not installed.
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ConfigurationError(
+                "export_to_dataframe requires pandas: pip install pandas"
+            ) from exc
+
+        coll = collection_name or self._collection_name
+        rows: list[dict[str, Any]] = []
+        offset: str | None = None
+        while True:
+            results, offset = await self._backend.scroll(
+                collection_name=coll,
+                limit=500,
+                offset=offset,
+                with_vectors=include_vectors,
+            )
+            for r in results:
+                rows.append(r.model_dump())
+            if offset is None:
+                break
+
+        return pd.DataFrame(rows)
+
+    async def dedup_collection(
+        self,
+        collection_name: str | None = None,
+        *,
+        strategy: str = "keep_latest",
+    ) -> int:
+        """Remove duplicate entries that share the same generated query hash.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+            strategy: ``"keep_latest"`` retains the most recently created entry;
+                ``"keep_first"`` retains the oldest.
+
+        Returns:
+            Number of duplicate entries deleted.
+        """
+        coll = collection_name or self._collection_name
+        seen: dict[str, Any] = {}
+        to_delete: list[str] = []
+        offset: str | None = None
+
+        while True:
+            results, offset = await self._backend.scroll(
+                collection_name=coll,
+                limit=500,
+                offset=offset,
+            )
+            for r in results:
+                qhash = r.query_hash
+                if qhash not in seen:
+                    seen[qhash] = r
+                else:
+                    existing = seen[qhash]
+                    if strategy == "keep_latest":
+                        r_ts = r.created_at
+                        ex_ts = existing.created_at
+                        if r_ts is not None and (ex_ts is None or r_ts > ex_ts):
+                            to_delete.append(existing.id)
+                            seen[qhash] = r
+                        else:
+                            to_delete.append(r.id)
+                    else:
+                        to_delete.append(r.id)
+            if offset is None:
+                break
+
+        if to_delete:
+            await self._backend.delete(coll, to_delete)
+            logger.info("dedup_collection: deleted %d duplicates from '%s'", len(to_delete), coll)
+
+        return len(to_delete)
 
     async def _sync_templates_to_backend(self) -> None:
         """Sync in-memory templates to the template collection in the backend.

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # --- Backend selection ---
     backend_type: Literal[
         "qdrant", "memory", "pgvector", "elasticsearch",
-        "vectorchord", "chroma", "weaviate", "redis"
+        "vectorchord", "chroma", "weaviate", "redis", "azure-search"
     ] = Field(
         default="memory",
         description=(
@@ -34,7 +34,8 @@ class Settings(BaseSettings):
             "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord]). "
             "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma]). "
             "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate]). "
-            "'redis' requires redis[hiredis]>=4.6 (pip install medha-archai[redis])."
+            "'redis' requires redis[hiredis]>=4.6 (pip install medha-archai[redis]). "
+            "'azure-search' requires azure-search-documents>=11.4 (pip install medha-archai[azure-search])."
         ),
     )
 
@@ -194,6 +195,38 @@ class Settings(BaseSettings):
     chroma_ssl: bool = Field(default=False, description="Use SSL for Chroma http connection")
     chroma_auth_token: SecretStr | None = Field(default=None, description="Bearer token for Chroma http authentication")
 
+    # --- Azure AI Search ---
+    azure_search_endpoint: str = Field(
+        default="",
+        description="Azure AI Search service endpoint (e.g. https://my-service.search.windows.net).",
+    )
+    azure_search_api_key: SecretStr | None = Field(
+        default=None,
+        description="Azure AI Search API key. If None, uses DefaultAzureCredential (requires azure-identity).",
+    )
+    azure_search_api_version: str = Field(
+        default="2024-05-01-preview",
+        description="Azure AI Search REST API version.",
+    )
+    azure_search_index_name: str = Field(
+        default="medha",
+        description=(
+            "Prefix for Azure Search index names. "
+            "Final index = '{azure_search_index_name}-{collection_name}' "
+            "(e.g. 'medha' + 'my_cache' → 'medha-my-cache'). "
+            "Corresponds to the env var MEDHA_AZURE_SEARCH_INDEX_NAME."
+        ),
+    )
+    azure_search_top_k_candidates: int = Field(
+        default=50,
+        ge=1,
+        le=10000,
+        description=(
+            "Extra candidates retrieved by HNSW before score filtering. "
+            "Added to limit in VectorizedQuery to improve recall without increasing returned results."
+        ),
+    )
+
     # --- Elasticsearch ---
     es_hosts: list[str] = Field(
         default_factory=lambda: ["http://localhost:9200"],
@@ -299,6 +332,7 @@ class Settings(BaseSettings):
 
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
+    batch_embed_concurrency: int = Field(default=1, ge=1, le=10, description="Chunk di embedding processati concorrentemente in store_many().")
 
     # --- Observability ---
     collect_stats: bool = Field(

@@ -19,7 +19,7 @@ except ImportError:
     HAS_PGVECTOR = False
 
 
-class PgVectorBackend(VectorStorageBackend, _AsyncpgBackendMixin):
+class PgVectorBackend(_AsyncpgBackendMixin, VectorStorageBackend):
     """PostgreSQL + pgvector backend. Requires asyncpg and pgvector packages."""
 
     def __init__(self, settings: Any = None) -> None:
