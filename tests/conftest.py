@@ -139,11 +139,23 @@ def _chroma_available() -> bool:
         return False
 
 
-_any_backend_params = ["memory"] + (["chroma"] if _chroma_available() else [])
+def _lancedb_available() -> bool:
+    try:
+        import lancedb  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_any_backend_params = (
+    ["memory"]
+    + (["chroma"] if _chroma_available() else [])
+    + (["lancedb"] if _lancedb_available() else [])
+)
 
 
 @pytest.fixture(params=_any_backend_params)
-async def any_backend(request):
+async def any_backend(request, tmp_path):
     """Parametrised over all backends testable without external services."""
     if request.param == "memory":
         from medha.backends.memory import InMemoryBackend
@@ -155,6 +167,13 @@ async def any_backend(request):
         from medha.backends.chroma import ChromaBackend
         from medha.config import Settings
         b = ChromaBackend(Settings(chroma_mode="ephemeral"))
+        await b.connect()
+        yield b
+        await b.close()
+    elif request.param == "lancedb":
+        from medha.backends.lancedb import LanceDBBackend
+        from medha.config import Settings
+        b = LanceDBBackend(Settings(lancedb_uri=str(tmp_path / "lancedb_any")))
         await b.connect()
         yield b
         await b.close()

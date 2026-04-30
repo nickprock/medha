@@ -58,8 +58,10 @@ vectorchord = ["asyncpg>=0.29,<1"]
 chroma = ["chromadb>=0.5,<1"]
 weaviate = ["weaviate-client>=4.6,<5"]
 azure-search = ["azure-search-documents>=11.4,<12"]
+lancedb = ["lancedb>=0.6,<1"]
 
-all = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma,weaviate,azure-search]"]
+all = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma,weaviate,azure-search,lancedb]"]
+all-no-chroma = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,weaviate,azure-search,lancedb]"]
 
 # Development
 dev = [
@@ -93,6 +95,7 @@ markers = [
     "redis: tests that require a running Redis Stack instance",
     "weaviate: tests that require a running Weaviate instance",
     "azure_search: tests that require an Azure AI Search service",
+    "lancedb: tests that require the lancedb package",
 ]
 
 [tool.ruff]
@@ -154,6 +157,8 @@ module = [
     "weaviate.*",
     "azure",
     "azure.*",
+    "lancedb",
+    "lancedb.*",
     "cohere",
     "cohere.*",
     "google.generativeai",

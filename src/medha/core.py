@@ -238,6 +238,9 @@ class Medha:
         elif bt == "azure-search":
             from medha.backends.azure_search import AzureSearchBackend
             return AzureSearchBackend(self._settings)
+        elif bt == "lancedb":
+            from medha.backends.lancedb import LanceDBBackend
+            return LanceDBBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 

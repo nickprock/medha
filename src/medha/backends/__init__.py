@@ -52,4 +52,10 @@ try:
 except ImportError:
     pass
 
+try:
+    from medha.backends.lancedb import LanceDBBackend
+    _all_extra.append("LanceDBBackend")
+except ImportError:
+    pass
+
 __all__ = ["InMemoryBackend"] + (["QdrantBackend"] if HAS_QDRANT else []) + _all_extra

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # --- Backend selection ---
     backend_type: Literal[
         "qdrant", "memory", "pgvector", "elasticsearch",
-        "vectorchord", "chroma", "weaviate", "redis", "azure-search"
+        "vectorchord", "chroma", "weaviate", "redis", "azure-search", "lancedb"
     ] = Field(
         default="memory",
         description=(
@@ -35,7 +35,8 @@ class Settings(BaseSettings):
             "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma]). "
             "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate]). "
             "'redis' requires redis[hiredis]>=4.6 (pip install medha-archai[redis]). "
-            "'azure-search' requires azure-search-documents>=11.4 (pip install medha-archai[azure-search])."
+            "'azure-search' requires azure-search-documents>=11.4 (pip install medha-archai[azure-search]). "
+            "'lancedb' requires lancedb>=0.6 (pip install medha-archai[lancedb])."
         ),
     )
 
@@ -194,6 +195,23 @@ class Settings(BaseSettings):
     chroma_persist_path: str | None = Field(default=None, description="Directory for Chroma persistent storage")
     chroma_ssl: bool = Field(default=False, description="Use SSL for Chroma http connection")
     chroma_auth_token: SecretStr | None = Field(default=None, description="Bearer token for Chroma http authentication")
+
+    # --- LanceDB ---
+    lancedb_uri: str = Field(
+        default="./lancedb_data",
+        description=(
+            "LanceDB storage URI. Use a local path (e.g. './lancedb_data') for embedded mode, "
+            "or a cloud URI (s3://, gs://, az://) for cloud storage."
+        ),
+    )
+    lancedb_table_prefix: str = Field(
+        default="medha",
+        description="Prefix for LanceDB table names (e.g. 'medha' → 'medha_my_cache').",
+    )
+    lancedb_metric: Literal["cosine", "l2", "dot"] = Field(
+        default="cosine",
+        description="Distance metric for LanceDB vector search: 'cosine' (default), 'l2', or 'dot'.",
+    )
 
     # --- Azure AI Search ---
     azure_search_endpoint: str = Field(

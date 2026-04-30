@@ -59,6 +59,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `redis_index_algorithm`, `redis_hnsw_m`, `redis_hnsw_ef_construction`,
   `redis_hnsw_ef_runtime`, `redis_socket_timeout`, `redis_socket_connect_timeout`.
 
+- **`AzureSearchBackend`**: Azure AI Search vector backend using HNSW
+  `VectorizedQuery` for approximate nearest-neighbour search. Supports both API-key
+  and `DefaultAzureCredential` (managed identity) authentication.
+  Install with `pip install medha-archai[azure-search]`.
+  Select via `Settings(backend_type="azure-search")`.
+  Configuration fields: `azure_search_endpoint`, `azure_search_api_key`,
+  `azure_search_api_version`, `azure_search_index_name`,
+  `azure_search_top_k_candidates`.
+
+- **`LanceDBBackend`**: LanceDB embedded/cloud vector backend using the native async
+  API (`lancedb.connect_async`). Local mode (default) requires no external services;
+  cloud storage is supported via `s3://`, `gs://`, and `az://` URIs.
+  Install with `pip install medha-archai[lancedb]`.
+  Select via `Settings(backend_type="lancedb")`.
+  Configuration fields: `lancedb_uri`, `lancedb_table_prefix`, `lancedb_metric`
+  (`cosine` / `l2` / `dot`).
+
 - **`_AsyncpgMixin`** (`medha.backends._asyncpg_mixin`): shared asyncpg connection-pool
   and SQL helpers extracted from `PgVectorBackend` and reused by `VectorChordBackend`.
 
@@ -171,9 +188,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `QdrantBackend` imports in `medha.backends` and `medha` are now guarded with
   `try/except ImportError` so the package loads cleanly without `qdrant-client`.
 
-- **`Settings.backend_type`** now accepts eight values:
+- **`Settings.backend_type`** now accepts ten values:
   `"qdrant"`, `"memory"`, `"pgvector"`, `"elasticsearch"`, `"vectorchord"`,
-  `"chroma"`, `"weaviate"`, `"redis"`.
+  `"chroma"`, `"weaviate"`, `"redis"`, `"azure-search"`, `"lancedb"`.
 
 - **`PgVectorBackend`** refactored to use the shared `_AsyncpgMixin`; its connection-pool
   logic is no longer duplicated in `VectorChordBackend`.
