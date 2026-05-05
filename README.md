@@ -1,10 +1,14 @@
 # Medha
 
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/medha-archai?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=BLUE&left_text=downloads)](https://pepy.tech/projects/medha-archai)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/medha-archai?period=total&units=INTERNATIONAL_SYSTEM&left_color=GRAY&right_color=BLUE&left_text=downloads)](https://pepy.tech/projects/medha-archai)
+[![PyPI](https://img.shields.io/pypi/v/medha-archai)](https://pypi.org/project/medha-archai/)
+[![Python](https://img.shields.io/pypi/pyversions/medha-archai)](https://pypi.org/project/medha-archai/)
+[![License](https://img.shields.io/github/license/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/stargazers)
 
 <br>
 
-![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_logo.png)
+![medha_logo](https://raw.githubusercontent.com/ArchAI-Labs/medha/refs/heads/main/img/medha_hex_600.png)
 
 <br>
 
@@ -56,7 +60,8 @@ Medha uses a sophisticated multi-tier search strategy to maximize cache hits. If
 pip install medha-archai
 ```
 
-Core dependencies: `pydantic`, `pydantic-settings`, `qdrant-client`.
+Core dependencies: `pydantic`, `pydantic-settings`.  
+> **Breaking change in 0.3.0:** `qdrant-client` is no longer a core dependency. Install it explicitly with `pip install "medha-archai[qdrant]"`. The default `backend_type` is now `"memory"`.
 
 ### With an embedding provider
 
@@ -66,6 +71,43 @@ pip install "medha-archai[fastembed]"
 
 # OpenAI embeddings
 pip install "medha-archai[openai]"
+
+# Cohere Embed v3
+pip install "medha-archai[cohere]"
+
+# Google Gemini embeddings
+pip install "medha-archai[gemini]"
+```
+
+### With a vector backend
+
+```bash
+# Qdrant (Docker / Cloud)
+pip install "medha-archai[qdrant]"
+
+# PostgreSQL + pgvector
+pip install "medha-archai[pgvector]"
+
+# Elasticsearch 8.x
+pip install "medha-archai[elasticsearch]"
+
+# PostgreSQL + VectorChord
+pip install "medha-archai[vectorchord]"
+
+# ChromaDB
+pip install "medha-archai[chroma]"
+
+# Weaviate
+pip install "medha-archai[weaviate]"
+
+# Redis Stack (vector backend + L1 cache)
+pip install "medha-archai[redis]"
+
+# Azure AI Search
+pip install "medha-archai[azure-search]"
+
+# LanceDB (embedded / S3 / GCS / Azure Blob)
+pip install "medha-archai[lancedb]"
 ```
 
 ### With optional extras
@@ -81,13 +123,10 @@ python -m spacy download en_core_web_sm
 # GLiNER NLP for zero-shot parameter extraction (uses param names as labels, ~500 MB model)
 pip install "medha-archai[gliner]"
 
-# Distributed L1 cache (Redis — for multi-instance deployments)
-pip install "medha-archai[redis]"
+# All optional dependencies (excluding ChromaDB for env compatibility)
+pip install "medha-archai[all-no-chroma]"
 
-# With pgvector backend
-pip install "medha-archai[pgvector]"
-
-# All optional dependencies
+# Everything
 pip install "medha-archai[all]"
 ```
 
@@ -145,11 +184,18 @@ if __name__ == "__main__":
 
 ## Choosing a Backend
 
-| Backend | Install | Persistence | Best For |
-|---------|---------|-------------|----------|
-| `qdrant` (default) | `pip install medha-archai` | Yes (Docker/Cloud) | Production, large datasets |
-| `memory` | `pip install medha-archai` | No | Testing, development, CI |
-| `pgvector` | `pip install medha-archai[pgvector]` | Yes (PostgreSQL) | Teams already using PostgreSQL |
+| Backend | Extra | Persistence | Best For |
+|---------|-------|-------------|----------|
+| `memory` **(default)** | _(none)_ | No | Testing, development, CI |
+| `qdrant` | `[qdrant]` | Yes (Docker/Cloud) | Production, large datasets |
+| `pgvector` | `[pgvector]` | Yes (PostgreSQL) | Teams already using PostgreSQL |
+| `vectorchord` | `[vectorchord]` | Yes (PostgreSQL + VectorChord) | High-performance approximate search |
+| `elasticsearch` | `[elasticsearch]` | Yes (Elasticsearch 8.x) | Teams running the Elastic stack |
+| `chroma` | `[chroma]` | Optional (ephemeral / disk / HTTP) | Quick experiments, local dev |
+| `weaviate` | `[weaviate]` | Yes (local / Weaviate Cloud) | Weaviate-native deployments |
+| `redis` | `[redis]` | Yes (Redis Stack / Sentinel) | Low-latency, Redis-native stacks |
+| `azure-search` | `[azure-search]` | Yes (Azure AI Search) | Azure-hosted deployments |
+| `lancedb` | `[lancedb]` | Yes (embedded / S3 / GCS / az) | Serverless, edge, embedded apps |
 
 ### InMemory Backend (zero dependencies)
 
@@ -172,13 +218,68 @@ async with Medha(collection_name="my_cache", embedder=embedder, settings=setting
 from medha import Medha, Settings
 from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
-embedder = FastEmbedAdapter()
 settings = Settings(
     backend_type="pgvector",
     pg_dsn="postgresql://user:password@localhost:5432/mydb",
 )
 
-async with Medha(collection_name="my_cache", embedder=embedder, settings=settings) as m:
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter(), settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+### LanceDB Backend (embedded / cloud)
+
+No external server needed for local mode. Supports S3, GCS, and Azure Blob Storage URIs for cloud storage.
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+settings = Settings(
+    backend_type="lancedb",
+    lancedb_uri="/tmp/my_lancedb",   # local path; use s3://... for cloud
+    lancedb_metric="cosine",         # cosine | l2 | dot
+)
+
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter(), settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+### Elasticsearch Backend
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+settings = Settings(
+    backend_type="elasticsearch",
+    es_hosts=["http://localhost:9200"],
+    es_api_key="your-api-key",   # or es_username / es_password
+)
+
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter(), settings=settings) as m:
+    await m.store("How many users?", "SELECT COUNT(*) FROM users")
+    hit = await m.search("Count of users")
+    print(hit.generated_query)
+```
+
+### Redis Stack Backend
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+settings = Settings(
+    backend_type="redis",
+    redis_url="redis://localhost:6379/0",
+    redis_index_algorithm="HNSW",  # HNSW | FLAT
+)
+
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter(), settings=settings) as m:
     await m.store("How many users?", "SELECT COUNT(*) FROM users")
     hit = await m.search("Count of users")
     print(hit.generated_query)
@@ -389,6 +490,45 @@ embedder = OpenAIAdapter(
 # API key from environment variable (OPENAI_API_KEY)
 embedder = OpenAIAdapter()
 ```
+
+### Cohere Embeddings
+
+Uses Cohere Embed v3 (`cohere.AsyncClientV2`). Requires an API key.
+
+```python
+from medha.embeddings.cohere_adapter import CohereAdapter
+
+# Default: embed-multilingual-v3.0
+embedder = CohereAdapter(api_key="your-cohere-key")
+
+# Explicit model
+embedder = CohereAdapter(
+    api_key="your-cohere-key",
+    model="embed-english-v3.0",
+)
+```
+
+Input types `search_query` / `search_document` are selected automatically at embed time.
+
+### Gemini Embeddings
+
+Uses Google Gemini embeddings (`google-generativeai`). Requires an API key.
+
+```python
+from medha.embeddings.gemini_adapter import GeminiAdapter
+
+# Default: models/text-embedding-004
+embedder = GeminiAdapter(api_key="your-gemini-key")
+
+# With reduced output dimensions (MRL — models/text-embedding-004 only)
+embedder = GeminiAdapter(
+    api_key="your-gemini-key",
+    model="models/text-embedding-004",
+    output_dimensionality=512,
+)
+```
+
+Task types `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT` are selected automatically. Requests are batched in chunks of 100.
 
 ### Custom Embedder
 
@@ -819,7 +959,7 @@ Both backends fall back gracefully if the package is not installed.
 
 ## Batch Operations
 
-Efficiently store many question-query pairs at once.
+### `store_batch` — single embedding round-trip
 
 ```python
 import asyncio
@@ -827,41 +967,176 @@ from medha import Medha
 from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
 entries = [
-    {
-        "question": "How many users are there?",
-        "generated_query": "SELECT COUNT(*) FROM users;",
-    },
-    {
-        "question": "List all active orders",
-        "generated_query": "SELECT * FROM orders WHERE status = 'active';",
-    },
-    {
-        "question": "Average order value",
-        "generated_query": "SELECT AVG(amount) FROM orders;",
-        "response_summary": "Returns the mean order amount.",
-    },
-    {
-        "question": "Top 5 customers by spend",
-        "generated_query": "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id ORDER BY total DESC LIMIT 5;",
-    },
+    {"question": "How many users are there?", "generated_query": "SELECT COUNT(*) FROM users;"},
+    {"question": "List all active orders",    "generated_query": "SELECT * FROM orders WHERE status = 'active';"},
+    {"question": "Average order value",       "generated_query": "SELECT AVG(amount) FROM orders;",
+     "response_summary": "Returns the mean order amount."},
 ]
 
 async def main():
-    embedder = FastEmbedAdapter()
-
-    async with Medha(
-        collection_name="batch_demo",
-        embedder=embedder,
-    ) as cache:
+    async with Medha(collection_name="batch_demo", embedder=FastEmbedAdapter()) as cache:
         success = await cache.store_batch(entries)
         print(f"Batch stored: {success}")
 
-        # Verify
         hit = await cache.search("How many users exist?")
         print(f"{hit.strategy.value}: {hit.generated_query}")
-        # semantic_match: SELECT COUNT(*) FROM users;
 
 asyncio.run(main())
+```
+
+### `store_many` — chunked bulk upsert with progress
+
+For large datasets that exceed memory or API-rate limits. Chunking and concurrency are controlled by `Settings.batch_size` and `Settings.batch_embed_concurrency`.
+
+```python
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+settings = Settings(
+    batch_size=200,              # entries per embedding chunk
+    batch_embed_concurrency=4,   # concurrent embedding requests
+)
+
+async def main():
+    async with Medha(
+        collection_name="large_cache",
+        embedder=FastEmbedAdapter(),
+        settings=settings,
+    ) as cache:
+        stored = await cache.store_many(
+            entries,             # list of {question, generated_query, ...} dicts
+            ttl=86400,           # optional per-entry TTL (seconds)
+            on_progress=lambda done, total: print(f"{done}/{total}"),
+        )
+        print(f"Stored {stored} entries")
+```
+
+`warm_from_file()` and `warm_from_dataframe()` both delegate to `store_many()` internally.
+
+### Export & Dedup
+
+```python
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter()) as cache:
+    # Export all entries to a pandas DataFrame
+    df = await cache.export_to_dataframe()
+    print(df.head())
+
+    # Remove duplicate entries (same query_hash), keep most-used per group
+    removed = await cache.dedup_collection()
+    print(f"Removed {removed} duplicates")
+```
+
+---
+
+## Cache Lifecycle (TTL & Invalidation)
+
+### Per-entry TTL
+
+Pass `ttl` (seconds) to `store()` or `store_many()`. Expired entries are excluded from all search results automatically.
+
+```python
+import asyncio
+from medha import Medha, Settings
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+async def main():
+    settings = Settings(
+        backend_type="memory",
+        default_ttl_seconds=3600,          # global default: 1 hour
+        cleanup_interval_seconds=300,      # auto-delete expired entries every 5 min
+    )
+
+    async with Medha(
+        collection_name="my_cache",
+        embedder=FastEmbedAdapter(),
+        settings=settings,
+    ) as cache:
+        # Per-entry TTL overrides the global default
+        await cache.store(
+            "Show live orders",
+            "SELECT * FROM orders WHERE status = 'live';",
+            ttl=60,    # expires in 60 seconds
+        )
+
+        # Entry with no TTL (immortal regardless of default)
+        await cache.store(
+            "Count all users",
+            "SELECT COUNT(*) FROM users;",
+            ttl=None,
+        )
+
+        # Manually expire all stale entries in the collection
+        deleted = await cache.expire()
+        print(f"Deleted {deleted} expired entries")
+
+asyncio.run(main())
+```
+
+### Cache Invalidation
+
+```python
+async with Medha(collection_name="my_cache", embedder=FastEmbedAdapter()) as cache:
+    # Remove a specific entry by exact question text
+    removed = await cache.invalidate("Show live orders")
+    print(removed)   # True if found and deleted
+
+    # Remove all entries sharing the same query hash
+    count = await cache.invalidate_by_query_hash("abc123...")
+
+    # Remove all entries associated with a template intent
+    count = await cache.invalidate_by_template("employee_lookup")
+
+    # Drop and recreate the entire collection
+    count = await cache.invalidate_collection()
+```
+
+---
+
+## Observability
+
+### CacheStats
+
+`Medha.stats()` returns an immutable `CacheStats` snapshot with hit/miss rates, percentile latencies, and per-strategy breakdowns.
+
+```python
+import asyncio
+from medha import Medha
+from medha.embeddings.fastembed_adapter import FastEmbedAdapter
+
+async def main():
+    async with Medha(
+        collection_name="my_cache",
+        embedder=FastEmbedAdapter(),
+    ) as cache:
+        await cache.store("Count all users", "SELECT COUNT(*) FROM users;")
+        await cache.search("How many users are there?")
+        await cache.search("Something unrelated")
+
+        stats = await cache.stats()
+
+        print(f"Hit rate:         {stats.hit_rate:.1f}%")
+        print(f"Total requests:   {stats.total_requests}")
+        print(f"Total hits:       {stats.total_hits}")
+        print(f"Avg latency:      {stats.avg_latency_ms:.2f} ms")
+        print(f"p50 / p95 / p99:  {stats.p50_latency_ms:.2f} / "
+              f"{stats.p95_latency_ms:.2f} / {stats.p99_latency_ms:.2f} ms")
+
+        for strategy, s in stats.by_strategy.items():
+            print(f"  {strategy:16s}  count={s.count}  avg={s.avg_latency_ms:.2f} ms")
+
+        # Reset counters
+        await cache.reset_stats()
+
+asyncio.run(main())
+```
+
+Relevant `Settings` fields:
+
+```python
+settings = Settings(
+    collect_stats=True,               # default: True — disable to save overhead
+    stats_max_latency_samples=10_000, # FIFO buffer size for percentile calculations
+)
 ```
 
 ---
@@ -1037,7 +1312,7 @@ settings = Settings(batch_size=50)
 
 ## Cache Monitoring
 
-Track cache performance and hit rates at runtime.
+Track cache performance and hit rates at runtime. See the [Observability](#observability) section for `CacheStats` details.
 
 ```python
 import asyncio
@@ -1045,45 +1320,26 @@ from medha import Medha
 from medha.embeddings.fastembed_adapter import FastEmbedAdapter
 
 async def main():
-    embedder = FastEmbedAdapter()
-
     async with Medha(
         collection_name="monitored_cache",
-        embedder=embedder,
+        embedder=FastEmbedAdapter(),
     ) as cache:
-        # Populate cache
         await cache.store("Count all users", "SELECT COUNT(*) FROM users;")
         await cache.store("List departments", "SELECT DISTINCT department FROM employees;")
 
-        # Run some searches
         await cache.search("How many users are there?")
         await cache.search("Show all departments")
         await cache.search("Something completely unrelated")
 
-        # Check stats
-        stats = cache.stats
-        print(f"Total requests:  {stats['total_requests']}")
-        print(f"Hit rate:        {stats['hit_rate']:.1f}%")
-        print(f"L1 hits:         {stats['by_strategy']['l1_hits']}")
-        print(f"Semantic hits:   {stats['by_strategy']['semantic_hits']}")
-        print(f"Misses:          {stats['by_strategy']['misses']}")
-        print(f"Total stored:    {stats['total_stored']}")
-        print(f"Warm loaded:     {stats['warm_loaded']}")
-        print(f"Templates:       {stats['templates_loaded']}")
+        # stats() is an async method returning a CacheStats object
+        stats = await cache.stats()
+        print(f"Total requests:  {stats.total_requests}")
+        print(f"Hit rate:        {stats.hit_rate:.1f}%")
+        print(f"Avg latency:     {stats.avg_latency_ms:.2f} ms")
+        print(f"p95 latency:     {stats.p95_latency_ms:.2f} ms")
 
-        # Per-tier latency breakdown (ms)
-        for tier, data in stats["tier_latencies_ms"].items():
-            print(f"  {tier:12s}  avg={data['avg_ms']:.2f}ms  calls={data['calls']}")
-
-        # Example output:
-        # Total requests:  3
-        # Hit rate:        66.7%
-        # ...
-        #   l1_cache      avg=0.01ms  calls=3
-        #   template      avg=1.20ms  calls=3
-        #   exact         avg=18.40ms calls=1
-        #   semantic      avg=18.40ms calls=1
-        #   fuzzy         avg=0.00ms  calls=0
+        for strategy, s in stats.by_strategy.items():
+            print(f"  {strategy:16s}  count={s.count}  avg={s.avg_latency_ms:.2f} ms")
 
 asyncio.run(main())
 ```
@@ -1255,12 +1511,22 @@ asyncio.run(main())
 |---|---|
 | `Medha` | Core cache class with waterfall search |
 | `Medha.search(question)` | Waterfall search → `CacheHit` |
-| `Medha.store(question, query, ...)` | Store a question-query pair |
-| `Medha.store_batch(entries)` | Bulk store (single embedding round-trip) |
-| `Medha.warm_from_file(path)` | Pre-populate cache from JSON / JSONL file |
+| `Medha.store(question, query, *, ttl)` | Store a question-query pair with optional TTL |
+| `Medha.store_batch(entries)` | Bulk store — single embedding round-trip |
+| `Medha.store_many(entries, *, batch_size, on_progress, ttl)` | Chunked bulk upsert with concurrency control |
+| `Medha.warm_from_file(path, *, ttl)` | Pre-populate cache from JSON / JSONL file |
+| `Medha.warm_from_dataframe(df, *, ttl)` | Pre-populate cache from a pandas DataFrame |
+| `Medha.export_to_dataframe(collection_name)` | Export collection to a pandas DataFrame |
+| `Medha.dedup_collection(collection_name)` | Remove duplicate entries (same `query_hash`) |
+| `Medha.expire(collection_name)` | Delete all expired entries; returns count |
+| `Medha.invalidate(question)` | Remove entry by exact question text; returns `bool` |
+| `Medha.invalidate_by_query_hash(hash)` | Remove all entries with a given query hash |
+| `Medha.invalidate_by_template(template_id)` | Remove all entries for a template intent |
+| `Medha.invalidate_collection(collection_name)` | Drop and recreate an entire collection |
+| `Medha.stats(collection_name)` | Returns a `CacheStats` snapshot (async method) |
+| `Medha.reset_stats()` | Reset all in-process statistics counters |
 | `Medha.load_templates(templates)` | Load `QueryTemplate` list at runtime |
 | `Medha.load_templates_from_file(path)` | Load templates from JSON file |
-| `Medha.stats` | Dict with hit rates, per-tier latencies, stored/warm counts |
 | `Medha.clear_caches()` | Clear L1 + embedding caches (async) |
 | `Medha.search_sync` / `store_sync` / `warm_from_file_sync` / `clear_caches_sync` | Sync wrappers |
 
@@ -1269,7 +1535,9 @@ asyncio.run(main())
 | Class | Description |
 |---|---|
 | `Settings` | Pydantic configuration with env var support (`MEDHA_` prefix) |
-| `CacheHit` | Search result: `generated_query`, `confidence`, `strategy` |
+| `CacheHit` | Search result: `generated_query`, `confidence`, `strategy`, `expires_at` |
+| `CacheStats` | Immutable stats snapshot: hit/miss rates, latency percentiles, per-strategy breakdown |
+| `StrategyStats` | Per-strategy `count`, `total_latency_ms`, `avg_latency_ms` |
 | `QueryTemplate` | Parameterized question-to-query template |
 | `CacheEntry` | Stored cache entry with vector and metadata |
 | `CacheResult` | Backend search result with score |
@@ -1284,11 +1552,20 @@ asyncio.run(main())
 | `VectorStorageBackend` | Abstract interface for vector storage backends |
 | `FastEmbedAdapter` | Local embeddings via FastEmbed (ONNX) |
 | `OpenAIAdapter` | OpenAI embedding API adapter |
-| `QdrantBackend` | Qdrant vector storage (memory / docker / cloud) |
+| `CohereAdapter` | Cohere Embed v3 adapter (`pip install medha-archai[cohere]`) |
+| `GeminiAdapter` | Google Gemini adapter (`pip install medha-archai[gemini]`) |
 | `InMemoryBackend` | Pure-Python in-process backend, zero deps (`backend_type="memory"`) |
-| `PgVectorBackend` | PostgreSQL + pgvector backend (`pip install medha[pgvector]`) |
+| `QdrantBackend` | Qdrant vector storage (memory / docker / cloud) |
+| `PgVectorBackend` | PostgreSQL + pgvector (`pip install medha-archai[pgvector]`) |
+| `VectorChordBackend` | PostgreSQL + VectorChord (`pip install medha-archai[vectorchord]`) |
+| `ElasticsearchBackend` | Elasticsearch 8.x (`pip install medha-archai[elasticsearch]`) |
+| `ChromaBackend` | ChromaDB ephemeral / disk / HTTP (`pip install medha-archai[chroma]`) |
+| `WeaviateBackend` | Weaviate local / cloud (`pip install medha-archai[weaviate]`) |
+| `RedisVectorBackend` | Redis Stack HNSW/FLAT (`pip install medha-archai[redis]`) |
+| `AzureSearchBackend` | Azure AI Search HNSW (`pip install medha-archai[azure-search]`) |
+| `LanceDBBackend` | LanceDB embedded / S3 / GCS / az (`pip install medha-archai[lancedb]`) |
 | `InMemoryL1Cache` | Default in-process LRU L1 cache |
-| `RedisL1Cache` | Redis-backed L1 cache (`pip install medha[redis]`) |
+| `RedisL1Cache` | Redis-backed L1 cache (`pip install medha-archai[redis]`) |
 
 ### Utilities
 
@@ -1310,6 +1587,13 @@ asyncio.run(main())
 * [x] `PgVectorBackend` — PostgreSQL + pgvector backend.
 * [x] `backend_type` setting for declarative backend selection.
 * [x] Security hardening: `max_question_length`, `max_file_size_mb`, `allowed_file_dir`, `qdrant_api_key` as `SecretStr`, PostgreSQL identifier validation.
+* [x] `ElasticsearchBackend`, `VectorChordBackend`, `ChromaBackend`, `WeaviateBackend`, `RedisVectorBackend`, `AzureSearchBackend`, `LanceDBBackend` — seven new vector backends.
+* [x] `CohereAdapter` and `GeminiAdapter` — two new embedding providers.
+* [x] TTL support on `store()` / `store_many()` with per-entry and global defaults.
+* [x] `expire()` and `invalidate*()` cache lifecycle methods.
+* [x] `CacheStats` observability model with hit rate, latency percentiles, and per-strategy breakdown.
+* [x] `store_many()`, `export_to_dataframe()`, `dedup_collection()` — batch and management operations.
+* [x] `qdrant-client` moved to optional `[qdrant]` extra; default `backend_type` changed to `"memory"`.
 * [ ] Feedback loop — mark a cache hit as correct/incorrect.
 
 ---

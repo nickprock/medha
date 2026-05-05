@@ -39,7 +39,7 @@ class BaseEmbedder(ABC):
         ...
 
     @abstractmethod
-    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_batch(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Args:
@@ -60,9 +60,9 @@ class BaseEmbedder(ABC):
         """Synchronous wrapper for aembed."""
         return self._run_sync(self.aembed(text))
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def embed_batch(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Synchronous wrapper for aembed_batch."""
-        return self._run_sync(self.aembed_batch(texts))
+        return self._run_sync(self.aembed_batch(texts, **kwargs))
 
     @staticmethod
     def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:

@@ -43,7 +43,7 @@ class MockEmbedder(BaseEmbedder):
         magnitude = sum(v**2 for v in values) ** 0.5
         return [v / magnitude for v in values] if magnitude > 0 else values
 
-    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_batch(self, texts: list[str], **kwargs: object) -> list[list[float]]:
         return [await self.aembed(t) for t in texts]
 
 
@@ -131,12 +131,49 @@ def test_settings_pgvector():
     )
 
 
-@pytest.fixture(params=["memory"])
-async def any_backend(request):
-    """Parametrizzato su tutti i backend testabili senza servizi esterni."""
+def _chroma_available() -> bool:
+    try:
+        import chromadb  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _lancedb_available() -> bool:
+    try:
+        import lancedb  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_any_backend_params = (
+    ["memory"]
+    + (["chroma"] if _chroma_available() else [])
+    + (["lancedb"] if _lancedb_available() else [])
+)
+
+
+@pytest.fixture(params=_any_backend_params)
+async def any_backend(request, tmp_path):
+    """Parametrised over all backends testable without external services."""
     if request.param == "memory":
         from medha.backends.memory import InMemoryBackend
         b = InMemoryBackend()
+        await b.connect()
+        yield b
+        await b.close()
+    elif request.param == "chroma":
+        from medha.backends.chroma import ChromaBackend
+        from medha.config import Settings
+        b = ChromaBackend(Settings(chroma_mode="ephemeral"))
+        await b.connect()
+        yield b
+        await b.close()
+    elif request.param == "lancedb":
+        from medha.backends.lancedb import LanceDBBackend
+        from medha.config import Settings
+        b = LanceDBBackend(Settings(lancedb_uri=str(tmp_path / "lancedb_any")))
         await b.connect()
         yield b
         await b.close()

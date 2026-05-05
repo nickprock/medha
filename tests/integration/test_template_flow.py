@@ -90,7 +90,7 @@ class TestLoadAndSync:
 class TestMatchAndRender:
     async def test_match_and_render(self, medha, templates):
         await medha.load_templates(templates)
-        medha._l1_cache.clear()
+        await medha.clear_caches()
 
         hit = await medha.search("How many users are there")
         if hit.strategy == SearchStrategy.TEMPLATE_MATCH:
@@ -104,7 +104,7 @@ class TestMatchAndRender:
 
     async def test_match_top_n(self, medha, templates):
         await medha.load_templates(templates)
-        medha._l1_cache.clear()
+        await medha.clear_caches()
 
         hit = await medha.search("Show top 10 products")
         if hit.strategy == SearchStrategy.TEMPLATE_MATCH:
@@ -116,7 +116,7 @@ class TestMatchAndRender:
 class TestNoMatchWithoutParams:
     async def test_no_match_without_params(self, medha, templates):
         await medha.load_templates(templates)
-        medha._l1_cache.clear()
+        await medha.clear_caches()
 
         # "department" template requires a capitalized heuristic word.
         # If we give no extractable department, params will be incomplete.
@@ -147,7 +147,7 @@ class TestPriorityOrdering:
         )
 
         await medha.load_templates([high_priority, low_priority])
-        medha._l1_cache.clear()
+        await medha.clear_caches()
 
         hit = await medha.search("How many users are there")
         if hit.strategy == SearchStrategy.TEMPLATE_MATCH:

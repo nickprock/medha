@@ -17,7 +17,7 @@ class TestFastEmbedAdapter:
         assert adapter.dimension == 384
 
     def test_model_name(self, adapter):
-        assert adapter.model_name == "sentence-transformers/all-MiniLM-L6-v2"
+        assert adapter.model_name == "BAAI/bge-small-en-v1.5"
 
     async def test_embed_single(self, adapter):
         vec = await adapter.aembed("test query")

@@ -105,7 +105,7 @@ async def run_benchmark(
     ]
 
     embedder = CountingEmbedder()
-    # backend_type="memory" — pure-Python backend, no Qdrant needed.
+    # backend_type="memory" — pure-Python backend (default in 0.3.0).
     # This benchmark measures embedding deduplication, not backend performance.
     settings = Settings(backend_type="memory")
     medha = Medha("conc_bench", embedder=embedder, settings=settings)

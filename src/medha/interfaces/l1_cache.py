@@ -32,6 +32,15 @@ class L1CacheBackend(ABC):
         """Remove all entries from the cache."""
         ...
 
+    @abstractmethod
+    async def invalidate(self, key: str) -> None:
+        """Remove a single entry by *key*. No-op if key is absent."""
+        ...
+
+    async def invalidate_all(self) -> None:
+        """Remove all entries. Delegates to :meth:`clear` by default."""
+        await self.clear()
+
     @property
     @abstractmethod
     def size(self) -> int:

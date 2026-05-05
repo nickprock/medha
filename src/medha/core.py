@@ -9,20 +9,111 @@ import os
 import re
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+_UNSET = object()
 
 from medha.config import Settings
 from medha.exceptions import ConfigurationError, EmbeddingError, MedhaError, StorageError, TemplateError
 from medha.interfaces.embedder import BaseEmbedder
 from medha.interfaces.l1_cache import L1CacheBackend
 from medha.interfaces.storage import VectorStorageBackend
-from medha.types import CacheEntry, CacheHit, CacheResult, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheHit, CacheResult, CacheStats, QueryTemplate, SearchStrategy, StrategyStats
 from medha.utils.nlp import ParameterExtractor, keyword_overlap_score
 from medha.utils.normalization import normalize_question, query_hash, question_hash
 
 logger = logging.getLogger(__name__)
+
+_HIT_STRATEGIES = frozenset({
+    SearchStrategy.L1_CACHE,
+    SearchStrategy.TEMPLATE_MATCH,
+    SearchStrategy.EXACT_MATCH,
+    SearchStrategy.SEMANTIC_MATCH,
+    SearchStrategy.FUZZY_MATCH,
+})
+
+
+class _StatsCollector:
+    """Thread-safe async collector for cache performance metrics."""
+
+    def __init__(self, enabled: bool = True, max_latency_samples: int = 10_000) -> None:
+        self._enabled = enabled
+        self._max_latency_samples = max_latency_samples
+        self._lock = asyncio.Lock()
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self._total_requests = 0
+        self._total_hits = 0
+        self._total_misses = 0
+        self._total_errors = 0
+        self._total_latency_ms = 0.0
+        self._by_strategy: dict[str, dict[str, float | int]] = {}
+        self._latencies: deque[float] = deque(maxlen=self._max_latency_samples)
+        self._since = datetime.now(timezone.utc)
+
+    async def record(self, strategy: SearchStrategy, latency_ms: float) -> None:
+        if not self._enabled:
+            return
+        async with self._lock:
+            self._total_requests += 1
+            self._total_latency_ms += latency_ms
+            self._latencies.append(latency_ms)
+
+            key = strategy.value
+            if key not in self._by_strategy:
+                self._by_strategy[key] = {"count": 0, "total_latency_ms": 0.0}
+            self._by_strategy[key]["count"] = int(self._by_strategy[key]["count"]) + 1
+            self._by_strategy[key]["total_latency_ms"] = float(self._by_strategy[key]["total_latency_ms"]) + latency_ms
+
+            if strategy in _HIT_STRATEGIES:
+                self._total_hits += 1
+            elif strategy == SearchStrategy.ERROR:
+                self._total_errors += 1
+            else:
+                self._total_misses += 1
+
+    async def snapshot(self, backend_count: int) -> CacheStats:
+        async with self._lock:
+            until = datetime.now(timezone.utc)
+            sorted_latencies = sorted(self._latencies)
+            n = len(sorted_latencies)
+
+            def _pct(p: float) -> float:
+                if n == 0:
+                    return 0.0
+                return sorted_latencies[min(int(n * p), n - 1)]
+
+            by_strategy = {
+                k: StrategyStats(
+                    count=int(v["count"]),
+                    total_latency_ms=float(v["total_latency_ms"]),
+                )
+                for k, v in self._by_strategy.items()
+            }
+
+            return CacheStats(
+                by_strategy=by_strategy,
+                total_requests=self._total_requests,
+                total_hits=self._total_hits,
+                total_misses=self._total_misses,
+                total_errors=self._total_errors,
+                total_latency_ms=self._total_latency_ms,
+                p50_latency_ms=_pct(0.50),
+                p95_latency_ms=_pct(0.95),
+                p99_latency_ms=_pct(0.99),
+                backend_count=backend_count,
+                since=self._since,
+                until=until,
+            )
+
+    async def reset(self) -> None:
+        async with self._lock:
+            self._reset_state()
 
 
 class Medha:
@@ -96,24 +187,14 @@ class Medha:
         self._param_extractor = ParameterExtractor()
 
         # Stats
-        self._stats = {
-            "l1_hits": 0,
-            "template_hits": 0,
-            "exact_hits": 0,
-            "semantic_hits": 0,
-            "fuzzy_hits": 0,
-            "misses": 0,
-            "errors": 0,
-        }
-        self._tier_latencies: dict[str, dict[str, float]] = {
-            "l1_cache":  {"total_ms": 0.0, "calls": 0},
-            "template":  {"total_ms": 0.0, "calls": 0},
-            "exact":     {"total_ms": 0.0, "calls": 0},
-            "semantic":  {"total_ms": 0.0, "calls": 0},
-            "fuzzy":     {"total_ms": 0.0, "calls": 0},
-        }
+        self._stats = _StatsCollector(
+            enabled=self._settings.collect_stats,
+            max_latency_samples=self._settings.stats_max_latency_samples,
+        )
         self._total_stored = 0
         self._warm_loaded = 0
+        self._cleanup_task: asyncio.Task[None] | None = None
+        self._known_collections = [self._collection_name]
 
     # --- Private helpers ---
 
@@ -139,6 +220,27 @@ class Medha:
         elif bt == "pgvector":
             from medha.backends.pgvector import PgVectorBackend
             return PgVectorBackend(self._settings)
+        elif bt == "elasticsearch":
+            from medha.backends.elasticsearch import ElasticsearchBackend
+            return ElasticsearchBackend(self._settings)
+        elif bt == "vectorchord":
+            from medha.backends.vectorchord import VectorChordBackend
+            return VectorChordBackend(self._settings)
+        elif bt == "chroma":
+            from medha.backends.chroma import ChromaBackend
+            return ChromaBackend(self._settings)
+        elif bt == "weaviate":
+            from medha.backends.weaviate import WeaviateBackend
+            return WeaviateBackend(self._settings)
+        elif bt == "redis":
+            from medha.backends.redis_vector import RedisVectorBackend
+            return RedisVectorBackend(self._settings)
+        elif bt == "azure-search":
+            from medha.backends.azure_search import AzureSearchBackend
+            return AzureSearchBackend(self._settings)
+        elif bt == "lancedb":
+            from medha.backends.lancedb import LanceDBBackend
+            return LanceDBBackend(self._settings)
         else:
             raise ConfigurationError(f"Unknown backend_type: '{bt}'")
 
@@ -197,6 +299,9 @@ class Medha:
         if self._settings.embedding_cache_path:
             self._load_embedding_cache_from_disk()
 
+        if self._settings.cleanup_interval_seconds:
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
         logger.info(
             "Medha started: collection='%s', templates=%d",
             self._collection_name,
@@ -205,6 +310,11 @@ class Medha:
 
     async def close(self) -> None:
         """Shut down the backend and release resources."""
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
         if self._settings.embedding_cache_path:
             self._save_embedding_cache_to_disk()
         await self._l1_backend.close()
@@ -243,12 +353,18 @@ class Medha:
             CacheHit with the matched query, confidence, and strategy.
             Returns CacheHit(strategy=NO_MATCH) if no tier matches.
         """
+        t0 = time.monotonic()
+        result = await self._search_impl(question)
+        latency_ms = (time.monotonic() - t0) * 1000
+        await self._stats.record(result.strategy, latency_ms)
+        return result
+
+    async def _search_impl(self, question: str) -> CacheHit:
         try:
             if not question or not question.strip():
                 logger.warning("Search called with empty question")
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
-            # NEW: length guard
             if len(question) > self._settings.max_question_length:
                 logger.warning(
                     "Search rejected: question length %d exceeds max %d",
@@ -260,23 +376,15 @@ class Medha:
             logger.debug("Search started for: '%s'", question[:80])
 
             # --- Tier 0: L1 Cache ---
-            _t = time.perf_counter()
             l1_hit = await self._check_l1_cache(question)
-            self._tier_latencies["l1_cache"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["l1_cache"]["calls"] += 1
             if l1_hit:
-                self._stats["l1_hits"] += 1
                 logger.debug("Tier 0 L1 cache HIT for: '%s'", question[:50])
                 return l1_hit
             logger.debug("Tier 0 L1 cache MISS")
 
             # --- Tier 1: Template Matching ---
-            _t = time.perf_counter()
             template_hit = await self._search_templates(question)
-            self._tier_latencies["template"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["template"]["calls"] += 1
             if template_hit:
-                self._stats["template_hits"] += 1
                 await self._store_in_l1(question, template_hit)
                 logger.debug(
                     "Tier 1 template HIT: template='%s', confidence=%.3f",
@@ -289,28 +397,18 @@ class Medha:
             # --- Get embedding (shared by Tier 2, 3) ---
             embedding = await self._get_embedding(question)
             if embedding is None:
-                self._stats["errors"] += 1
                 logger.error("Embedding failed, aborting search for: '%s'", question[:50])
                 return CacheHit(strategy=SearchStrategy.ERROR)
 
             # --- Tier 2 + 3: Exact and Semantic in parallel ---
-            # Both tiers query the same vector backend with different thresholds.
             # Running them concurrently reduces wall-clock latency from
             # ~(t_exact + t_semantic) to ~max(t_exact, t_semantic).
-            _t = time.perf_counter()
             exact_hit, semantic_hit = await asyncio.gather(
                 self._search_exact(embedding),
                 self._search_semantic(embedding),
             )
-            _elapsed_ms = (time.perf_counter() - _t) * 1000
-            # Both tiers share the same wall-clock window; record individually.
-            self._tier_latencies["exact"]["total_ms"] += _elapsed_ms
-            self._tier_latencies["exact"]["calls"] += 1
-            self._tier_latencies["semantic"]["total_ms"] += _elapsed_ms
-            self._tier_latencies["semantic"]["calls"] += 1
 
             if exact_hit:
-                self._stats["exact_hits"] += 1
                 await self._store_in_l1(question, exact_hit)
                 logger.debug(
                     "Tier 2 exact HIT: confidence=%.4f, query='%s'",
@@ -321,7 +419,6 @@ class Medha:
             logger.debug("Tier 2 exact MISS (threshold=%.2f)", self._settings.score_threshold_exact)
 
             if semantic_hit:
-                self._stats["semantic_hits"] += 1
                 await self._store_in_l1(question, semantic_hit)
                 logger.debug(
                     "Tier 3 semantic HIT: confidence=%.4f, query='%s'",
@@ -332,27 +429,18 @@ class Medha:
             logger.debug("Tier 3 semantic MISS (threshold=%.2f)", self._settings.score_threshold_semantic)
 
             # --- Tier 4: Fuzzy Matching ---
-            _t = time.perf_counter()
             fuzzy_hit = await self._search_fuzzy(question, embedding)
-            self._tier_latencies["fuzzy"]["total_ms"] += (time.perf_counter() - _t) * 1000
-            self._tier_latencies["fuzzy"]["calls"] += 1
             if fuzzy_hit:
-                self._stats["fuzzy_hits"] += 1
                 await self._store_in_l1(question, fuzzy_hit)
-                logger.debug(
-                    "Tier 4 fuzzy HIT: confidence=%.4f", fuzzy_hit.confidence
-                )
+                logger.debug("Tier 4 fuzzy HIT: confidence=%.4f", fuzzy_hit.confidence)
                 return fuzzy_hit
             logger.debug("Tier 4 fuzzy MISS (threshold=%.1f)", self._settings.score_threshold_fuzzy)
 
-            # --- No match ---
-            self._stats["misses"] += 1
             logger.debug("All tiers exhausted, NO_MATCH for: '%s'", question[:50])
             return CacheHit(strategy=SearchStrategy.NO_MATCH)
 
         except Exception as e:
             logger.error("Search failed for '%s': %s", question[:50], e, exc_info=True)
-            self._stats["errors"] += 1
             return CacheHit(strategy=SearchStrategy.ERROR)
 
     # --- Tier Implementations ---
@@ -603,6 +691,7 @@ class Medha:
         generated_query: str,
         response_summary: str | None = None,
         template_id: str | None = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
     ) -> bool:
         """Store a question-query pair in the cache.
 
@@ -636,6 +725,13 @@ class Medha:
                 logger.error("Store aborted: embedding failed for '%s'", question[:50])
                 return False
 
+            resolved_ttl = ttl if ttl is not _UNSET else self._settings.default_ttl_seconds
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=resolved_ttl)
+                if resolved_ttl is not None
+                else None
+            )
+
             normalized = normalize_question(question)
             entry = CacheEntry(
                 id=str(uuid.uuid4()),
@@ -646,6 +742,7 @@ class Medha:
                 query_hash=query_hash(generated_query),
                 response_summary=response_summary,
                 template_id=template_id,
+                expires_at=expires_at,
             )
 
             await self._backend.upsert(self._collection_name, [entry])
@@ -709,7 +806,7 @@ class Medha:
 
             # Single batch embedding call — much faster than N sequential calls
             try:
-                coro = self._embedder.aembed_batch(normalized_questions)
+                coro = self._embedder.aembed_batch(normalized_questions, is_document=True)
                 if self._settings.embedding_timeout is not None:
                     coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
                 embeddings = await coro
@@ -772,6 +869,164 @@ class Medha:
             logger.error("Batch store failed: %s", e, exc_info=True)
             return False
 
+    # --- TTL / Expiry ---
+
+    async def expire(self, collection_name: str | None = None) -> int:
+        """Delete expired entries from the collection.
+
+        Args:
+            collection_name: Target collection. None = all known collections.
+
+        Returns:
+            Total number of entries deleted.
+        """
+        collections = [collection_name] if collection_name else self._known_collections
+        total = 0
+        for coll in collections:
+            try:
+                expired_ids = await self._backend.find_expired(coll)
+                if expired_ids:
+                    await self._backend.delete(coll, expired_ids)
+                    total += len(expired_ids)
+            except Exception:
+                logger.exception("expire() failed for collection '%s'", coll)
+        return total
+
+    # --- Invalidation API ---
+
+    async def invalidate(self, question: str) -> bool:
+        """Invalidate a single cache entry by its original question.
+
+        Finds the entry in the vector backend via normalized_question match,
+        deletes it, and removes the corresponding L1 key.
+
+        Args:
+            question: Natural language question whose cached entry to remove.
+
+        Returns:
+            True if an entry was found and deleted, False if not found.
+        """
+        normalized = normalize_question(question)
+        try:
+            result = await self._backend.search_by_normalized_question(
+                self._collection_name, normalized
+            )
+        except Exception:
+            logger.exception("invalidate: backend lookup failed for '%s'", question[:50])
+            return False
+
+        if result is None:
+            logger.debug("invalidate: no entry found for '%s'", question[:50])
+            return False
+
+        try:
+            await self._backend.delete(self._collection_name, [result.id])
+        except Exception:
+            logger.exception("invalidate: backend delete failed for id='%s'", result.id)
+            return False
+
+        key = question_hash(question)
+        await self._l1_backend.invalidate(key)
+        logger.info("Invalidated entry for '%s' (id=%s)", question[:50], result.id)
+        return True
+
+    async def invalidate_by_query_hash(self, query_hash: str) -> int:
+        """Invalidate all entries whose generated query matches *query_hash*.
+
+        Args:
+            query_hash: MD5 hash of the generated query (as stored in the backend).
+
+        Returns:
+            Number of entries deleted.
+        """
+        try:
+            ids = await self._backend.find_by_query_hash(self._collection_name, query_hash)
+        except Exception:
+            logger.exception("invalidate_by_query_hash: lookup failed for hash='%s'", query_hash)
+            return 0
+
+        if not ids:
+            return 0
+
+        try:
+            await self._backend.delete(self._collection_name, ids)
+        except Exception:
+            logger.exception("invalidate_by_query_hash: delete failed")
+            return 0
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated %d entries for query_hash='%s'", len(ids), query_hash)
+        return len(ids)
+
+    async def invalidate_by_template(self, template_id: str) -> int:
+        """Invalidate all entries belonging to a template.
+
+        Args:
+            template_id: Template intent identifier.
+
+        Returns:
+            Number of entries deleted.
+        """
+        try:
+            ids = await self._backend.find_by_template_id(self._collection_name, template_id)
+        except Exception:
+            logger.exception("invalidate_by_template: lookup failed for template_id='%s'", template_id)
+            return 0
+
+        if not ids:
+            return 0
+
+        try:
+            await self._backend.delete(self._collection_name, ids)
+        except Exception:
+            logger.exception("invalidate_by_template: delete failed")
+            return 0
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated %d entries for template_id='%s'", len(ids), template_id)
+        return len(ids)
+
+    async def invalidate_collection(self, collection_name: str | None = None) -> int:
+        """Drop and re-initialize a collection, clearing all its entries.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+
+        Returns:
+            Number of entries that were in the collection before deletion.
+        """
+        coll = collection_name or self._collection_name
+        try:
+            count = await self._backend.count(coll)
+        except Exception:
+            count = 0
+
+        try:
+            await self._backend.drop_collection(coll)
+        except Exception:
+            logger.exception("invalidate_collection: drop failed for '%s'", coll)
+            return 0
+
+        try:
+            await self._backend.initialize(coll, self._embedder.dimension)
+        except Exception:
+            logger.exception("invalidate_collection: re-initialize failed for '%s'", coll)
+
+        await self._l1_backend.invalidate_all()
+        logger.info("Invalidated collection '%s' (%d entries dropped)", coll, count)
+        return count
+
+    async def _cleanup_loop(self) -> None:
+        interval = self._settings.cleanup_interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                n = await self.expire()
+                if n > 0:
+                    logger.info("TTL cleanup: removed %d expired entries", n)
+            except Exception:
+                logger.exception("TTL cleanup failed")
+
     # --- Template Management ---
 
     def _resolve_and_check_path(self, raw_path: str, label: str) -> Path:
@@ -829,7 +1084,12 @@ class Medha:
                 f"Failed to load templates from '{file_path}': {e}"
             ) from e
 
-    async def warm_from_file(self, path: str) -> int:
+    async def warm_from_file(
+        self,
+        path: str,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+    ) -> int:
         """Warm the cache from a JSON or JSONL file.
 
         Supports two formats:
@@ -840,6 +1100,8 @@ class Medha:
 
         Args:
             path: Path to the file.
+            batch_size: Override the default batch size for chunked upserts.
+            on_progress: Optional callback ``(done, total)`` called after each chunk.
 
         Returns:
             Number of entries successfully stored.
@@ -860,9 +1122,9 @@ class Medha:
                 content = f.read().strip()
 
             if content.startswith("["):
-                entries = json.loads(content)
+                data = json.loads(content)
             else:
-                entries = [
+                data = [
                     json.loads(line)
                     for line in content.splitlines()
                     if line.strip()
@@ -872,18 +1134,283 @@ class Medha:
         except Exception as e:
             raise MedhaError(f"warm_from_file: cannot read '{path}': {e}") from e
 
-        if not entries:
+        if not data:
             logger.warning("warm_from_file: no entries found in '%s'", path)
             return 0
 
-        ok = await self.store_batch(entries)
-        count = len(entries) if ok else 0
-        if ok:
+        count = await self.store_many(data, batch_size=batch_size, on_progress=on_progress)
+        if count:
             self._warm_loaded += count
             logger.info("Cache warmed: %d entries from '%s'", count, path)
-        else:
-            logger.error("warm_from_file: store_batch failed for '%s'", path)
         return count
+
+    def _build_cache_entries(
+        self,
+        chunk: list[dict[str, Any]],
+        embeddings: list[list[float]],
+        resolved_ttl: int | None,
+    ) -> list[CacheEntry]:
+        entries = []
+        for item, embedding in zip(chunk, embeddings, strict=False):
+            question = item["question"]
+            normalized = normalize_question(question)
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=resolved_ttl)
+                if resolved_ttl is not None
+                else None
+            )
+            entries.append(CacheEntry(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                original_question=question,
+                normalized_question=normalized,
+                generated_query=item["generated_query"],
+                query_hash=query_hash(item["generated_query"]),
+                response_summary=item.get("response_summary"),
+                template_id=item.get("template_id"),
+                expires_at=expires_at,
+            ))
+        return entries
+
+    async def store_many(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
+    ) -> int:
+        """Store multiple entries using chunked, optionally concurrent embedding.
+
+        Fail-fast: raises ValueError if any entry is missing 'question' or
+        'generated_query' before any embedding or upsert is performed.
+
+        Args:
+            entries: List of dicts, each with at minimum 'question' and
+                'generated_query'. Optional keys: 'response_summary', 'template_id'.
+            batch_size: Chunk size. Defaults to settings.batch_size.
+            on_progress: Optional callback ``(done: int, total: int)`` called
+                after each chunk is upserted.
+            ttl: TTL in seconds for the new entries. _UNSET = use settings default.
+
+        Returns:
+            Number of entries stored.
+
+        Raises:
+            ValueError: If any entry is missing required keys.
+        """
+        for i, item in enumerate(entries):
+            if not item.get("question", "").strip():
+                raise ValueError(f"store_many: entry {i} missing or empty 'question'")
+            if not item.get("generated_query", "").strip():
+                raise ValueError(f"store_many: entry {i} missing or empty 'generated_query'")
+
+        if not entries:
+            return 0
+
+        chunk_size = batch_size or self._settings.batch_size
+        total = len(entries)
+        done = 0
+        resolved_ttl = ttl if ttl is not _UNSET else self._settings.default_ttl_seconds
+        concurrency = self._settings.batch_embed_concurrency
+        chunks = [entries[i: i + chunk_size] for i in range(0, total, chunk_size)]
+
+        async def _embed_chunk(chunk: list[dict[str, Any]]) -> list[list[float]]:
+            normalized = [normalize_question(item["question"]) for item in chunk]
+            coro = self._embedder.aembed_batch(normalized, is_document=True)
+            if self._settings.embedding_timeout is not None:
+                coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
+            return await coro
+
+        async def _upsert_chunk(chunk: list[dict[str, Any]], embeddings: list[list[float]]) -> None:
+            cache_entries = self._build_cache_entries(chunk, embeddings, resolved_ttl)
+            await self._backend.upsert(self._collection_name, cache_entries)
+            for item in chunk:
+                await self._store_in_l1(
+                    item["question"],
+                    CacheHit(
+                        generated_query=item["generated_query"],
+                        response_summary=item.get("response_summary"),
+                        confidence=1.0,
+                        strategy=SearchStrategy.EXACT_MATCH,
+                        template_used=item.get("template_id"),
+                    ),
+                )
+
+        if concurrency > 1:
+            for group_start in range(0, len(chunks), concurrency):
+                group = chunks[group_start: group_start + concurrency]
+                embeddings_list: list[list[list[float]]] = await asyncio.gather(
+                    *[_embed_chunk(chunk) for chunk in group]
+                )
+                for chunk, embeddings in zip(group, embeddings_list, strict=False):
+                    await _upsert_chunk(chunk, embeddings)
+                    done += len(chunk)
+                    if on_progress is not None:
+                        on_progress(done, total)
+        else:
+            for chunk in chunks:
+                embeddings = await _embed_chunk(chunk)
+                await _upsert_chunk(chunk, embeddings)
+                done += len(chunk)
+                if on_progress is not None:
+                    on_progress(done, total)
+
+        self._total_stored += total
+        logger.info("store_many: stored %d entries in %d chunks", total, len(chunks))
+        return total
+
+    async def warm_from_dataframe(
+        self,
+        df: Any,
+        *,
+        question_col: str = "question",
+        query_col: str = "generated_query",
+        response_col: str = "response_summary",
+        template_col: str | None = None,
+        batch_size: int | None = None,
+        on_progress: Any = None,
+        ttl: int | None = _UNSET,  # type: ignore[assignment]
+    ) -> int:
+        """Warm the cache from a pandas DataFrame.
+
+        Args:
+            df: A ``pandas.DataFrame`` with at least the question and query columns.
+            question_col: Column name for questions.
+            query_col: Column name for generated queries.
+            response_col: Column name for optional response summaries.
+            template_col: Column name for optional template IDs.
+            batch_size: Override chunk size.
+            on_progress: Optional ``(done, total)`` callback.
+            ttl: TTL for new entries.
+
+        Returns:
+            Number of entries stored.
+
+        Raises:
+            ConfigurationError: If pandas is not installed.
+        """
+        try:
+            import pandas  # noqa: F401
+        except ImportError as exc:
+            raise ConfigurationError(
+                "warm_from_dataframe requires pandas: pip install pandas"
+            ) from exc
+
+        rows: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            item: dict[str, Any] = {
+                "question": row[question_col],
+                "generated_query": row[query_col],
+            }
+            if response_col in df.columns:
+                val = row.get(response_col)
+                if val is not None:
+                    item["response_summary"] = val
+            if template_col is not None and template_col in df.columns:
+                val = row.get(template_col)
+                if val is not None:
+                    item["template_id"] = val
+            rows.append(item)
+
+        return await self.store_many(rows, batch_size=batch_size, on_progress=on_progress, ttl=ttl)
+
+    async def export_to_dataframe(
+        self,
+        collection_name: str | None = None,
+        *,
+        include_vectors: bool = False,
+    ) -> Any:
+        """Export all cache entries to a pandas DataFrame.
+
+        Scrolls the entire collection in pages of 500 and returns the result
+        as a DataFrame where each row is the ``model_dump()`` of a CacheResult.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+            include_vectors: Whether to request vectors from the backend.
+
+        Returns:
+            ``pandas.DataFrame`` with one row per cache entry.
+
+        Raises:
+            ConfigurationError: If pandas is not installed.
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ConfigurationError(
+                "export_to_dataframe requires pandas: pip install pandas"
+            ) from exc
+
+        coll = collection_name or self._collection_name
+        rows: list[dict[str, Any]] = []
+        offset: str | None = None
+        while True:
+            results, offset = await self._backend.scroll(
+                collection_name=coll,
+                limit=500,
+                offset=offset,
+                with_vectors=include_vectors,
+            )
+            for r in results:
+                rows.append(r.model_dump())
+            if offset is None:
+                break
+
+        return pd.DataFrame(rows)
+
+    async def dedup_collection(
+        self,
+        collection_name: str | None = None,
+        *,
+        strategy: str = "keep_latest",
+    ) -> int:
+        """Remove duplicate entries that share the same generated query hash.
+
+        Args:
+            collection_name: Target collection. None = main collection.
+            strategy: ``"keep_latest"`` retains the most recently created entry;
+                ``"keep_first"`` retains the oldest.
+
+        Returns:
+            Number of duplicate entries deleted.
+        """
+        coll = collection_name or self._collection_name
+        seen: dict[str, Any] = {}
+        to_delete: list[str] = []
+        offset: str | None = None
+
+        while True:
+            results, offset = await self._backend.scroll(
+                collection_name=coll,
+                limit=500,
+                offset=offset,
+            )
+            for r in results:
+                qhash = r.query_hash
+                if qhash not in seen:
+                    seen[qhash] = r
+                else:
+                    existing = seen[qhash]
+                    if strategy == "keep_latest":
+                        r_ts = r.created_at
+                        ex_ts = existing.created_at
+                        if r_ts is not None and (ex_ts is None or r_ts > ex_ts):
+                            to_delete.append(existing.id)
+                            seen[qhash] = r
+                        else:
+                            to_delete.append(r.id)
+                    else:
+                        to_delete.append(r.id)
+            if offset is None:
+                break
+
+        if to_delete:
+            await self._backend.delete(coll, to_delete)
+            logger.info("dedup_collection: deleted %d duplicates from '%s'", len(to_delete), coll)
+
+        return len(to_delete)
 
     async def _sync_templates_to_backend(self) -> None:
         """Sync in-memory templates to the template collection in the backend.
@@ -919,7 +1446,8 @@ class Medha:
         # Single batch embedding call instead of N sequential aembed() calls
         try:
             coro = self._embedder.aembed_batch(
-                [embed_text for _, _, embed_text in items]
+                [embed_text for _, _, embed_text in items],
+                is_document=True,
             )
             if self._settings.embedding_timeout is not None:
                 coro = asyncio.wait_for(coro, timeout=self._settings.embedding_timeout)
@@ -1052,43 +1580,27 @@ class Medha:
 
     # --- Statistics & Monitoring ---
 
-    @property
-    def stats(self) -> dict[str, Any]:
-        """Return cache performance statistics.
+    async def stats(self, collection_name: str | None = None) -> CacheStats:
+        """Return a frozen snapshot of cache performance metrics.
 
-        Includes per-tier hit counts, average latency in milliseconds,
-        total entries stored, and warm-loaded count.
+        Args:
+            collection_name: Collection to count entries for. None = main collection.
+
+        Returns:
+            CacheStats with hit/miss rates, latency percentiles, and backend count.
         """
-        total = sum(self._stats.values())
-        hit_count = total - self._stats["misses"] - self._stats["errors"]
-        tier_latencies = {
-            tier: {
-                "avg_ms": round(data["total_ms"] / data["calls"], 3) if data["calls"] > 0 else 0.0,
-                "total_ms": round(data["total_ms"], 3),
-                "calls": data["calls"],
-            }
-            for tier, data in self._tier_latencies.items()
-        }
-        return {
-            "total_requests": total,
-            "hit_rate": (hit_count / total * 100) if total > 0 else 0.0,
-            "by_strategy": dict(self._stats),
-            "tier_latencies_ms": tier_latencies,
-            "l1_cache_size": self._l1_backend.size,
-            "embedding_cache_size": len(self._embedding_cache),
-            "templates_loaded": len(self._templates),
-            "total_stored": self._total_stored,
-            "warm_loaded": self._warm_loaded,
-        }
+        backend_count = await self._backend.count(collection_name or self._collection_name)
+        return await self._stats.snapshot(backend_count)
+
+    async def reset_stats(self) -> None:
+        """Reset all collected statistics to zero."""
+        await self._stats.reset()
 
     async def clear_caches(self) -> None:
         """Clear all caches (L1, embedding). Backend data is preserved."""
         await self._l1_backend.clear()
         self._embedding_cache.clear()
-        self._stats = {k: 0 for k in self._stats}
-        for data in self._tier_latencies.values():
-            data["total_ms"] = 0.0
-            data["calls"] = 0
+        await self._stats.reset()
         self._total_stored = 0
         self._warm_loaded = 0
         logger.info("In-memory caches cleared")

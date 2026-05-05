@@ -102,6 +102,44 @@ class MockBackend(VectorStorageBackend):
         id_set = set(ids)
         self._collections[collection_name] = [e for e in entries if e.id not in id_set]
 
+    async def find_expired(self, collection_name: str) -> list[str]:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        return [
+            e.id
+            for e in self._collections.get(collection_name, [])
+            if e.expires_at is not None and e.expires_at < now
+        ]
+
+    async def search_by_normalized_question(
+        self, collection_name: str, normalized_question: str
+    ) -> CacheResult | None:
+        for e in self._collections.get(collection_name, []):
+            if e.normalized_question == normalized_question:
+                return CacheResult(
+                    id=e.id, score=1.0,
+                    original_question=e.original_question,
+                    normalized_question=e.normalized_question,
+                    generated_query=e.generated_query,
+                    query_hash=e.query_hash,
+                )
+        return None
+
+    async def find_by_query_hash(self, collection_name: str, query_hash: str) -> list[str]:
+        return [
+            e.id for e in self._collections.get(collection_name, [])
+            if e.query_hash == query_hash
+        ]
+
+    async def find_by_template_id(self, collection_name: str, template_id: str) -> list[str]:
+        return [
+            e.id for e in self._collections.get(collection_name, [])
+            if e.template_id == template_id
+        ]
+
+    async def drop_collection(self, collection_name: str) -> None:
+        self._collections.pop(collection_name, None)
+
     async def close(self) -> None:
         pass
 
@@ -159,7 +197,8 @@ class TestL1Cache:
         assert hit1.strategy != SearchStrategy.NO_MATCH
         hit2 = await medha_instance.search("How many users?")
         assert hit2.strategy != SearchStrategy.NO_MATCH
-        assert medha_instance._stats["l1_hits"] >= 1
+        s = await medha_instance.stats()
+        assert s.by_strategy.get("l1_cache") is not None and s.by_strategy["l1_cache"].count >= 1
 
     async def test_l1_eviction(self, mock_backend, waterfall_settings):
         waterfall_settings = Settings(
@@ -242,7 +281,8 @@ class TestWaterfallOrder:
         # Empty cache → should hit NO_MATCH (all tiers exhausted)
         hit = await medha_instance.search("any question here")
         assert hit.strategy == SearchStrategy.NO_MATCH
-        assert medha_instance._stats["misses"] == 1
+        s = await medha_instance.stats()
+        assert s.total_misses == 1
 
 
 class TestStoreAndSearch:
@@ -263,10 +303,10 @@ class TestStats:
     async def test_stats_tracking(self, medha_instance):
         await medha_instance.start()
         await medha_instance.search("no match question xyz")
-        stats = medha_instance.stats
-        assert stats["total_requests"] >= 1
-        assert "by_strategy" in stats
-        assert stats["by_strategy"]["misses"] >= 1
+        s = await medha_instance.stats()
+        assert s.total_requests >= 1
+        assert len(s.by_strategy) >= 1
+        assert s.total_misses >= 1
 
 
 class TestClearCaches:
@@ -277,7 +317,8 @@ class TestClearCaches:
         await medha_instance.clear_caches()
         assert medha_instance._l1_backend.size == 0
         assert len(medha_instance._embedding_cache) == 0
-        assert medha_instance._stats["l1_hits"] == 0
+        s = await medha_instance.stats()
+        assert s.total_requests == 0
 
 
 class TestEmptyQuestion:
@@ -673,7 +714,7 @@ class TestWarmFromFile:
         f.write_text(json.dumps(data))
 
         await medha_instance.warm_from_file(str(f))
-        assert medha_instance.stats["warm_loaded"] == 2
+        assert medha_instance._warm_loaded == 2
 
     async def test_warm_optional_fields(self, medha_instance, tmp_path):
         """response_summary and template_id are preserved."""
@@ -719,30 +760,29 @@ class TestWarmFromFile:
 class TestStatsGranular:
     """Tests for the extended stats fields."""
 
-    async def test_stats_has_tier_latencies(self, medha_instance):
-        """stats always contains tier_latencies_ms with all 5 tiers."""
-        await medha_instance.start()
-        s = medha_instance.stats
-        assert "tier_latencies_ms" in s
-        for tier in ("l1_cache", "template", "exact", "semantic", "fuzzy"):
-            assert tier in s["tier_latencies_ms"]
-            assert "avg_ms" in s["tier_latencies_ms"][tier]
-            assert "calls" in s["tier_latencies_ms"][tier]
-
-    async def test_tier_latencies_populated_after_search(self, medha_instance):
-        """After a search, at least l1_cache tier has calls > 0."""
+    async def test_stats_has_by_strategy_after_search(self, medha_instance):
+        """After a search, by_strategy is populated."""
         await medha_instance.start()
         await medha_instance.search("any question")
-        s = medha_instance.stats
-        assert s["tier_latencies_ms"]["l1_cache"]["calls"] >= 1
+        s = await medha_instance.stats()
+        assert s.total_requests >= 1
+        assert len(s.by_strategy) >= 1
+
+    async def test_stats_request_recorded_after_search(self, medha_instance):
+        """After a search, total_requests > 0 and latency is positive."""
+        await medha_instance.start()
+        await medha_instance.search("any question")
+        s = await medha_instance.stats()
+        assert s.total_requests >= 1
+        assert s.total_latency_ms >= 0.0
 
     async def test_total_stored_increments_on_store(self, medha_instance):
         await medha_instance.start()
-        assert medha_instance.stats["total_stored"] == 0
+        assert medha_instance._total_stored == 0
         await medha_instance.store("q1", "SELECT 1")
-        assert medha_instance.stats["total_stored"] == 1
+        assert medha_instance._total_stored == 1
         await medha_instance.store("q2", "SELECT 2")
-        assert medha_instance.stats["total_stored"] == 2
+        assert medha_instance._total_stored == 2
 
     async def test_total_stored_increments_on_store_batch(self, medha_instance):
         await medha_instance.start()
@@ -751,14 +791,14 @@ class TestStatsGranular:
             {"question": "batch b", "generated_query": "SELECT 20"},
         ]
         await medha_instance.store_batch(entries)
-        assert medha_instance.stats["total_stored"] == 2
+        assert medha_instance._total_stored == 2
 
     async def test_warm_loaded_zero_initially(self, medha_instance):
         await medha_instance.start()
-        assert medha_instance.stats["warm_loaded"] == 0
+        assert medha_instance._warm_loaded == 0
 
     async def test_clear_caches_resets_stats(self, medha_instance, tmp_path):
-        """clear_caches() resets tier latencies, total_stored and warm_loaded."""
+        """clear_caches() resets stats, total_stored and warm_loaded."""
         await medha_instance.start()
         await medha_instance.store("q", "SELECT 1")
         await medha_instance.search("q")
@@ -769,12 +809,11 @@ class TestStatsGranular:
         await medha_instance.warm_from_file(str(f))
 
         await medha_instance.clear_caches()
-        s = medha_instance.stats
-        assert s["total_stored"] == 0
-        assert s["warm_loaded"] == 0
-        for tier_data in s["tier_latencies_ms"].values():
-            assert tier_data["calls"] == 0
-            assert tier_data["total_ms"] == 0.0
+        s = await medha_instance.stats()
+        assert medha_instance._total_stored == 0
+        assert medha_instance._warm_loaded == 0
+        assert s.total_requests == 0
+        assert s.total_hits == 0
 
 
 class TestParallelTiers:
@@ -790,10 +829,8 @@ class TestParallelTiers:
         medha_instance._embedding_cache.clear()
 
         await medha_instance.search("a completely different question xyz")
-        # Both tiers were attempted (calls >= 1)
-        s = medha_instance.stats
-        assert s["tier_latencies_ms"]["exact"]["calls"] >= 1
-        assert s["tier_latencies_ms"]["semantic"]["calls"] >= 1
+        s = await medha_instance.stats()
+        assert s.total_requests >= 1
 
     async def test_exact_hit_preferred_over_semantic(self, medha_instance):
         """If both tiers return a result, exact (score >= 0.99) takes priority."""
@@ -814,9 +851,9 @@ class TestParallelTiers:
         medha_instance._embedding_cache.clear()
 
         await medha_instance.search("latency test q")
-        s = medha_instance.stats
-        assert s["tier_latencies_ms"]["exact"]["total_ms"] >= 0
-        assert s["tier_latencies_ms"]["semantic"]["total_ms"] >= 0
+        s = await medha_instance.stats()
+        assert s.total_requests == 1
+        assert s.total_latency_ms >= 0.0
 
 
 class TestPluggableL1Cache:

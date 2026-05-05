@@ -45,6 +45,10 @@ class InMemoryL1Cache(L1CacheBackend):
         async with self._lock:
             self._cache.clear()
 
+    async def invalidate(self, key: str) -> None:
+        async with self._lock:
+            self._cache.pop(key, None)
+
     @property
     def size(self) -> int:
         return len(self._cache)

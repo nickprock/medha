@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 try:
     from fastembed import TextEmbedding
@@ -85,7 +86,7 @@ class FastEmbedAdapter(BaseEmbedder):
                 f"Failed to embed text with model '{self._model_name}': {e}"
             ) from e
 
-    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_batch(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Uses fastembed's native batching for efficiency.

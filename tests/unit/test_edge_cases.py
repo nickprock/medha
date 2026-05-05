@@ -380,7 +380,7 @@ class TestEmbeddingTimeout:
         )
 
         class SlowEmbedder(MockEmbedder):
-            async def aembed_batch(self, texts):
+            async def aembed_batch(self, texts, **kwargs):
                 await asyncio.sleep(10)
                 return await super().aembed_batch(texts)
 
@@ -527,7 +527,7 @@ class TestTemplateSyncPartialFailure:
         from medha.types import QueryTemplate
 
         class BatchFailEmbedder(MockEmbedder):
-            async def aembed_batch(self, texts):
+            async def aembed_batch(self, texts, **kwargs):
                 raise EmbeddingError("intentional batch failure")
 
         template = QueryTemplate(
@@ -559,7 +559,7 @@ class TestTemplateSyncPartialFailure:
         from medha.types import QueryTemplate
 
         class AlwaysFailEmbedder(MockEmbedder):
-            async def aembed_batch(self, texts):
+            async def aembed_batch(self, texts, **kwargs):
                 raise EmbeddingError("always fails")
 
         template = QueryTemplate(
@@ -590,7 +590,7 @@ class TestTemplateSyncPartialFailure:
         all_texts_received = []
 
         class CountingEmbedder(MockEmbedder):
-            async def aembed_batch(self, texts):
+            async def aembed_batch(self, texts, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 all_texts_received.extend(texts)

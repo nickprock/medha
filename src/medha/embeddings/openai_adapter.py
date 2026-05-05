@@ -110,7 +110,7 @@ class OpenAIAdapter(BaseEmbedder):
                 f"Failed to embed text with OpenAI model '{self._model_name}': {e}"
             ) from e
 
-    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_batch(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Generate embeddings for a batch via OpenAI API.
 
         OpenAI's API natively supports batched input.

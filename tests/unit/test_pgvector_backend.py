@@ -394,3 +394,181 @@ async def test_postgres_error_on_upsert_wrapped(pg_backend):
 
     with pytest.raises(StorageError, match="PgVector operation failed"):
         await b.upsert(COLL, [_make_entry()])
+
+
+# ---------------------------------------------------------------------------
+# scroll (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_scroll_executes_sql(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.fetch.return_value = []
+
+    results, next_offset = await b.scroll(COLL, limit=10)
+
+    conn.fetch.assert_awaited()
+    sql = conn.fetch.call_args.args[0]
+    assert "ORDER BY" in sql
+    assert "LIMIT" in sql
+    assert results == []
+    assert next_offset is None
+
+
+# ---------------------------------------------------------------------------
+# search_by_query_hash (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_by_query_hash_found(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    row = {
+        "id": str(uuid.uuid4()),
+        "original_question": "test",
+        "normalized_question": "test",
+        "generated_query": "SELECT 42",
+        "query_hash": "abc123",
+        "response_summary": None,
+        "template_id": None,
+        "usage_count": 1,
+        "created_at": None,
+    }
+    conn.fetchrow.return_value = row
+
+    result = await b.search_by_query_hash(COLL, "abc123")
+
+    conn.fetchrow.assert_awaited()
+    assert result is not None
+    assert result.generated_query == "SELECT 42"
+
+
+async def test_search_by_query_hash_not_found(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.fetchrow.return_value = None
+
+    result = await b.search_by_query_hash(COLL, "nonexistent")
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# update_usage_count (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_update_usage_count_executes_update(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.execute.return_value = "UPDATE 1"
+
+    await b.update_usage_count(COLL, str(uuid.uuid4()))
+
+    update_calls = [c for c in conn.execute.call_args_list if "UPDATE" in str(c.args[0])]
+    assert any("usage_count" in str(c.args[0]) for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# find_expired (PgVector-specific)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_expired_executes_sql(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.fetch.return_value = []
+
+    expired_ids = await b.find_expired(COLL)
+
+    conn.fetch.assert_awaited()
+    sql = conn.fetch.call_args.args[0]
+    assert "expires_at" in sql
+    assert expired_ids == []
+
+
+# ---------------------------------------------------------------------------
+# drop_collection (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_drop_collection_executes_drop(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.execute.reset_mock()
+
+    await b.drop_collection(COLL)
+
+    drop_calls = [c for c in conn.execute.call_args_list if "DROP TABLE" in str(c.args[0])]
+    assert len(drop_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# find_by_query_hash (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_by_query_hash(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    eid = str(uuid.uuid4())
+    conn.fetch.return_value = [{"id": eid}]
+
+    ids = await b.find_by_query_hash(COLL, "abc123")
+
+    assert ids == [eid]
+
+
+# ---------------------------------------------------------------------------
+# find_by_template_id (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_by_template_id(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    eids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    conn.fetch.return_value = [{"id": e} for e in eids]
+
+    ids = await b.find_by_template_id(COLL, "my_template")
+
+    assert set(ids) == set(eids)
+
+
+# ---------------------------------------------------------------------------
+# search_by_normalized_question (from _AsyncpgBackendMixin)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_by_normalized_question_found(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    row = {
+        "id": str(uuid.uuid4()),
+        "original_question": "test",
+        "normalized_question": "test",
+        "generated_query": "SELECT 1",
+        "query_hash": "abc",
+        "response_summary": None,
+        "template_id": None,
+        "usage_count": 1,
+        "created_at": None,
+        "expires_at": None,
+    }
+    conn.fetchrow.return_value = row
+
+    result = await b.search_by_normalized_question(COLL, "test")
+
+    assert result is not None
+    assert result.generated_query == "SELECT 1"
+
+
+async def test_search_by_normalized_question_not_found(pg_backend):
+    b, conn = pg_backend
+    await b.initialize(COLL, DIM)
+    conn.fetchrow.return_value = None
+
+    result = await b.search_by_normalized_question(COLL, "nothing here")
+
+    assert result is None
