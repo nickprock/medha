@@ -58,7 +58,7 @@ vectorchord = ["asyncpg>=0.29,<1"]
 chroma = ["chromadb>=0.5,<1"]
 weaviate = ["weaviate-client>=4.6,<5"]
 azure-search = ["azure-search-documents>=11.4,<12"]
-lancedb = ["lancedb>=0.6,<1"]
+lancedb = ["lancedb>=0.6,<1", "pyarrow>=13"]
 
 all = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma,weaviate,azure-search,lancedb]"]
 all-no-chroma = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,weaviate,azure-search,lancedb]"]

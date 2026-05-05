@@ -82,12 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### New Embedders
 
 - **`CohereAdapter`**: Cohere Embed v3 embedder (`cohere.AsyncClientV2`).
-  Install with `pip install medha-archai[cohere]`. Supports `embed-english-v3.0` and
+  Install with `pip install medha-archai[cohere]`. Supports `embed-multilingual-v3.0` and
   other Cohere embedding models; selects `search_document` / `search_query` input types
   automatically.
 
-- **`GeminiAdapter`**: Google Gemini embedder (`google-genai`).
-  Install with `pip install medha-archai[gemini]`. Supports `text-embedding-004` and
+- **`GeminiAdapter`**: Google Gemini embedder (`google-generativeai`).
+  Install with `pip install medha-archai[gemini]`. Supports `models/text-embedding-004` and
   other Gemini embedding models; batches requests in chunks of 100 to stay within
   API limits.
 
