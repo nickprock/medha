@@ -156,8 +156,10 @@ class LanceDBBackend(VectorStorageBackend):
     # ------------------------------------------------------------------
 
     def _table_name(self, collection_name: str) -> str:
+        import re
         prefix = self._settings.lancedb_table_prefix
-        return f"{prefix}_{collection_name}" if prefix else collection_name
+        safe = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
+        return f"{prefix}_{safe}" if prefix else safe
 
     def _get_table(self, collection_name: str) -> Any:
         tbl = self._tables.get(collection_name)
@@ -183,9 +185,9 @@ class LanceDBBackend(VectorStorageBackend):
         where = f"expires_at = '' OR expires_at > '{now_iso}'"
         metric: str = self._settings.lancedb_metric
         try:
-            q = await table.search(vector)
             rows: list[dict[str, Any]] = await (
-                q.distance_type(metric)
+                table.vector_search(vector)
+                .distance_type(metric)
                 .where(where)
                 .limit(limit)
                 .to_list()

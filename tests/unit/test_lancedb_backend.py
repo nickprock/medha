@@ -65,7 +65,7 @@ def _lancedb_settings(**overrides) -> Settings:
 
 
 def _make_search_chain(rows: list[dict[str, Any]] | None = None) -> MagicMock:
-    # Represents AsyncVectorQuery returned by `await table.search(vector)`
+    # Represents VectorQuery returned by table.vector_search(vector) (sync builder, async to_list)
     chain = MagicMock()
     chain.distance_type.return_value = chain
     chain.where.return_value = chain
@@ -100,7 +100,7 @@ def _make_merge_chain() -> MagicMock:
 @pytest.fixture
 def mock_lancedb_table():
     table = MagicMock()
-    table.search = AsyncMock(return_value=_make_search_chain())
+    table.vector_search = MagicMock(return_value=_make_search_chain())
     table.query.return_value = _make_query_chain()
     table.merge_insert.return_value = _make_merge_chain()
     table.count_rows = AsyncMock(return_value=0)
@@ -242,7 +242,7 @@ async def test_search_returns_results(lancedb_backend, mock_lancedb_db):
     await b.initialize(COLL, DIM)
 
     row = _make_row(distance=0.1)
-    table.search = AsyncMock(return_value=_make_search_chain([row]))
+    table.vector_search = MagicMock(return_value=_make_search_chain([row]))
 
     results = await b.search(COLL, [0.1] * DIM, limit=5, score_threshold=0.0)
 
@@ -257,7 +257,7 @@ async def test_search_applies_score_threshold(lancedb_backend, mock_lancedb_db):
     await b.initialize(COLL, DIM)
 
     row = _make_row(distance=0.9)  # score = 0.1
-    table.search = AsyncMock(return_value=_make_search_chain([row]))
+    table.vector_search = MagicMock(return_value=_make_search_chain([row]))
 
     results = await b.search(COLL, [0.1] * DIM, score_threshold=0.5)
 
@@ -269,7 +269,7 @@ async def test_search_returns_empty_when_no_rows(lancedb_backend, mock_lancedb_d
     mock_lancedb_db.list_tables.return_value = []
     await b.initialize(COLL, DIM)
 
-    table.search.return_value = _make_search_chain([])
+    table.vector_search.return_value = _make_search_chain([])
 
     results = await b.search(COLL, [0.1] * DIM)
 
@@ -283,7 +283,7 @@ async def test_search_uses_configured_metric(lancedb_backend, mock_lancedb_db):
     await b.initialize(COLL, DIM)
 
     chain = _make_search_chain([])
-    table.search = AsyncMock(return_value=chain)
+    table.vector_search = MagicMock(return_value=chain)
 
     await b.search(COLL, [0.1] * DIM)
 

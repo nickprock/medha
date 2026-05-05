@@ -64,6 +64,12 @@ except ImportError:
     pass
 
 try:
+    from medha.backends.lancedb import LanceDBBackend
+    _optional.append("LanceDBBackend")
+except ImportError:
+    pass
+
+try:
     from medha.embeddings.cohere_adapter import CohereAdapter
     _optional.append("CohereAdapter")
 except ImportError:
