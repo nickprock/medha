@@ -8,20 +8,48 @@ Measures:
 
 At configurable collection sizes (default: 100, 1000, 10000).
 
-Backend options:
-    --backend memory   InMemoryBackend with linear scan (default in 0.3.0, good for n < 10k)
-    --backend qdrant   QdrantBackend with HNSW (requires medha-archai[qdrant], recommended for n > 10k)
+Backend options (--backend):
+    memory        InMemoryBackend — linear scan, zero external deps (default)
+    qdrant        QdrantBackend — HNSW, recommended for n > 10k
+                  pip install medha-archai[qdrant]
+                  Docker: docker run -p 6333:6333 qdrant/qdrant
+    pgvector      PostgreSQL + pgvector extension
+                  pip install medha-archai[pgvector]
+                  Docker: docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg16
+    elasticsearch Elasticsearch 8.x dense_vector kNN
+                  pip install medha-archai[elasticsearch]
+                  Docker: docker run -e "discovery.type=single-node" -e "xpack.security.enabled=false" -p 9200:9200 docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    vectorchord   PostgreSQL + vchordrq extension
+                  pip install medha-archai[vectorchord]
+                  Docker: docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 tensorchord/pgvecto-rs:pg16-latest
+    chroma        ChromaDB ephemeral (in-process)
+                  pip install medha-archai[chroma]
+    weaviate      Weaviate local
+                  pip install medha-archai[weaviate]
+                  Docker: docker run -p 8080:8080 -p 50051:50051 semitechnologies/weaviate:latest
+    redis         Redis Stack with RediSearch
+                  pip install medha-archai[redis]
+                  Docker: docker run -p 6379:6379 redis/redis-stack-server:latest
+    azure-search  Azure AI Search cloud service (requires MEDHA_AZURE_SEARCH_ENDPOINT env var)
+                  pip install medha-archai[azure-search]
+    lancedb       LanceDB embedded — zero deps, local disk
+                  pip install medha-archai[lancedb]
+
+External backends require a running service (see Docker snippets above).
 
 Usage:
     python experiments/latency_benchmark.py --sizes 100,1000,10000
     python experiments/latency_benchmark.py --sizes 100,500 --num-queries 50 --output latency_report.json
     python experiments/latency_benchmark.py --sizes 100,500 --backend memory
+    python experiments/latency_benchmark.py --sizes 100,1000 --backend elasticsearch
+    python experiments/latency_benchmark.py --sizes 100,500 --backend redis
 """
 
 import asyncio
 import argparse
 import json
 import random
+import tempfile
 import time
 from statistics import mean, median, stdev
 
@@ -111,6 +139,49 @@ _UNRELATED_QUESTIONS = [
     "What is the deepest point in the ocean?",
     "Who discovered penicillin?",
 ]
+
+
+def _build_settings(backend: str) -> Settings:
+    """Factory that returns a Settings instance for the given backend name."""
+    if backend == "memory":
+        return Settings(backend_type="memory")
+    if backend == "qdrant":
+        # pip install medha-archai[qdrant]
+        # Docker: docker run -p 6333:6333 qdrant/qdrant
+        return Settings(backend_type="qdrant", qdrant_mode="memory")
+    if backend == "pgvector":
+        # pip install medha-archai[pgvector]
+        # Docker: docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg16
+        return Settings(backend_type="pgvector")
+    if backend == "elasticsearch":
+        # pip install medha-archai[elasticsearch]
+        # Docker: docker run -e "discovery.type=single-node" -e "xpack.security.enabled=false" -p 9200:9200 docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+        return Settings(backend_type="elasticsearch")
+    if backend == "vectorchord":
+        # pip install medha-archai[vectorchord]
+        # Docker: docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 tensorchord/pgvecto-rs:pg16-latest
+        return Settings(backend_type="vectorchord")
+    if backend == "chroma":
+        # pip install medha-archai[chroma]
+        return Settings(backend_type="chroma", chroma_mode="ephemeral")
+    if backend == "weaviate":
+        # pip install medha-archai[weaviate]
+        # Docker: docker run -p 8080:8080 -p 50051:50051 semitechnologies/weaviate:latest
+        return Settings(backend_type="weaviate")
+    if backend == "redis":
+        # pip install medha-archai[redis]
+        # Docker: docker run -p 6379:6379 redis/redis-stack-server:latest
+        return Settings(backend_type="redis")
+    if backend == "azure-search":
+        # pip install medha-archai[azure-search]
+        # Requires MEDHA_AZURE_SEARCH_ENDPOINT and MEDHA_AZURE_SEARCH_API_KEY env vars
+        return Settings(backend_type="azure-search")
+    if backend == "lancedb":
+        # pip install medha-archai[lancedb]
+        # Embedded local storage — no external service required
+        tmpdir = tempfile.mkdtemp(prefix="medha_lancedb_bench_")
+        return Settings(backend_type="lancedb", lancedb_uri=tmpdir)
+    raise ValueError(f"Unknown backend: {backend!r}")
 
 
 def generate_unrelated(count: int) -> list[str]:
@@ -212,14 +283,7 @@ async def benchmark(
 
         # --- Setup ---
         embedder = FastEmbedAdapter()
-        if backend == "memory":
-            # Pure-Python InMemoryBackend: linear O(n) cosine scan.
-            # Fast for small collections; compare with "qdrant" at large n.
-            settings = Settings(backend_type="memory")
-        else:
-            # QdrantBackend: HNSW O(log n), supports quantization.
-            # Richiede: pip install medha-archai[qdrant]
-            settings = Settings(backend_type="qdrant", qdrant_mode="memory")
+        settings = _build_settings(backend)
         medha = Medha(f"bench_{size}", embedder=embedder, settings=settings)
         await medha.start()
 
@@ -304,11 +368,23 @@ def main():
         "--backend",
         type=str,
         default="memory",
-        choices=["qdrant", "memory"],
+        choices=[
+            "memory", "qdrant", "pgvector", "elasticsearch", "vectorchord",
+            "chroma", "weaviate", "redis", "azure-search", "lancedb",
+        ],
         help=(
-            "Vector backend to use: 'memory' (linear scan, default backend in 0.3.0) or "
-            "'qdrant' (HNSW, requires medha-archai[qdrant]). Use 'qdrant' to benchmark "
-            "HNSW performance at large collection sizes."
+            "Vector backend to use. Available backends: "
+            "memory (default, zero deps), "
+            "qdrant (HNSW, pip install medha-archai[qdrant]), "
+            "pgvector (pip install medha-archai[pgvector]), "
+            "elasticsearch (pip install medha-archai[elasticsearch]), "
+            "vectorchord (pip install medha-archai[vectorchord]), "
+            "chroma (pip install medha-archai[chroma]), "
+            "weaviate (pip install medha-archai[weaviate]), "
+            "redis (pip install medha-archai[redis]), "
+            "azure-search (pip install medha-archai[azure-search]), "
+            "lancedb (pip install medha-archai[lancedb]). "
+            "External backends require a running service."
         ),
     )
     args = parser.parse_args()
