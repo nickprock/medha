@@ -20,13 +20,23 @@ class Settings(BaseSettings):
     )
 
     # --- Backend selection ---
-    backend_type: Literal["qdrant", "memory", "pgvector"] = Field(
-        default="qdrant",
+    backend_type: Literal[
+        "qdrant", "memory", "pgvector", "elasticsearch",
+        "vectorchord", "chroma", "weaviate", "redis", "azure-search", "lancedb"
+    ] = Field(
+        default="memory",
         description=(
             "Vector storage backend to use. "
-            "'qdrant' requires qdrant-client (default). "
-            "'memory' uses pure Python in-process storage, zero external deps. "
-            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector])."
+            "'memory' uses pure Python in-process storage, zero external deps (default). "
+            "'qdrant' requires qdrant-client (pip install medha-archai[qdrant]). "
+            "'pgvector' requires asyncpg and pgvector (pip install medha-archai[pgvector]). "
+            "'elasticsearch' requires elasticsearch[async]>=8.12 (pip install medha-archai[elasticsearch]). "
+            "'vectorchord' requires asyncpg (pip install medha-archai[vectorchord]). "
+            "'chroma' requires chromadb>=0.5 (pip install medha-archai[chroma]). "
+            "'weaviate' requires weaviate-client>=4.6 (pip install medha-archai[weaviate]). "
+            "'redis' requires redis[hiredis]>=4.6 (pip install medha-archai[redis]). "
+            "'azure-search' requires azure-search-documents>=11.4 (pip install medha-archai[azure-search]). "
+            "'lancedb' requires lancedb>=0.6 (pip install medha-archai[lancedb])."
         ),
     )
 
@@ -117,6 +127,138 @@ class Settings(BaseSettings):
     pg_pool_min_size: int = Field(default=2, ge=1, description="Min connections in asyncpg pool")
     pg_pool_max_size: int = Field(default=10, ge=1, description="Max connections in asyncpg pool")
 
+    # --- VectorChord ---
+    vc_lists: list[int] = Field(
+        default_factory=lambda: [1000],
+        description="Number of centroids per level for the vchordrq index.",
+    )
+    vc_residual_quantization: bool = Field(
+        default=True,
+        description="Enable residual quantization in the vchordrq index.",
+    )
+
+    # --- Weaviate ---
+    weaviate_mode: Literal["local", "cloud"] = Field(
+        default="local",
+        description="Weaviate connection mode: 'local' (self-hosted) or 'cloud' (Weaviate Cloud).",
+    )
+    weaviate_host: str = Field(default="localhost", description="Weaviate host (local mode)")
+    weaviate_http_port: int = Field(default=8080, ge=1, le=65535, description="Weaviate HTTP port (local mode)")
+    weaviate_grpc_port: int = Field(default=50051, ge=1, le=65535, description="Weaviate gRPC port (local mode)")
+    weaviate_http_secure: bool = Field(default=False, description="Use HTTPS for Weaviate HTTP connection")
+    weaviate_grpc_secure: bool = Field(default=False, description="Use TLS for Weaviate gRPC connection")
+    weaviate_cloud_url: str | None = Field(default=None, description="Weaviate Cloud cluster URL (cloud mode)")
+    weaviate_api_key: SecretStr | None = Field(default=None, description="Weaviate API key")
+    weaviate_collection_prefix: str = Field(
+        default="Medha",
+        description="Prefix for Weaviate collection names in PascalCase (e.g. 'Medha' → 'MedhaMyCache')",
+    )
+
+    # --- Redis Stack ---
+    redis_mode: Literal["standalone", "sentinel"] = Field(
+        default="standalone",
+        description="Redis connection mode: 'standalone' or 'sentinel'.",
+    )
+    redis_url: str | None = Field(default=None, description="Full Redis URL (overrides host/port/db)")
+    redis_host: str = Field(default="localhost", description="Redis host (standalone mode)")
+    redis_port: int = Field(default=6379, ge=1, le=65535, description="Redis port")
+    redis_db: int = Field(default=0, ge=0, description="Redis database index")
+    redis_username: str | None = Field(default=None, description="Redis ACL username")
+    redis_password: SecretStr | None = Field(default=None, description="Redis password")
+    redis_ssl: bool = Field(default=False, description="Enable TLS for Redis connection")
+    redis_ssl_certfile: str | None = Field(default=None, description="Path to client TLS certificate")
+    redis_ssl_keyfile: str | None = Field(default=None, description="Path to client TLS key")
+    redis_ssl_ca_certs: str | None = Field(default=None, description="Path to CA certificate bundle")
+    redis_sentinel_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost:26379"],
+        description="Sentinel host:port list (sentinel mode)",
+    )
+    redis_sentinel_master: str = Field(default="mymaster", description="Sentinel master name")
+    redis_key_prefix: str = Field(default="medha", description="Prefix for all Redis keys and index names")
+    redis_index_algorithm: Literal["HNSW", "FLAT"] = Field(
+        default="HNSW",
+        description="RediSearch vector index algorithm: 'HNSW' (approx) or 'FLAT' (exact brute-force)",
+    )
+    redis_hnsw_m: int = Field(default=16, ge=4, le=64, description="HNSW: edges per node")
+    redis_hnsw_ef_construction: int = Field(default=200, ge=50, le=500, description="HNSW: build search depth")
+    redis_hnsw_ef_runtime: int = Field(default=10, ge=10, le=500, description="HNSW: query search depth")
+    redis_socket_timeout: float = Field(default=5.0, gt=0.0, description="Redis socket read timeout (s)")
+    redis_socket_connect_timeout: float = Field(default=5.0, gt=0.0, description="Redis socket connect timeout (s)")
+
+    # --- Chroma ---
+    chroma_mode: Literal["ephemeral", "persistent", "http"] = Field(
+        default="ephemeral",
+        description="Chroma connection mode: 'ephemeral' (in-memory), 'persistent' (local disk), 'http' (remote server).",
+    )
+    chroma_host: str = Field(default="localhost", description="Chroma server host (http mode)")
+    chroma_port: int = Field(default=8000, ge=1, le=65535, description="Chroma server port (http mode)")
+    chroma_persist_path: str | None = Field(default=None, description="Directory for Chroma persistent storage")
+    chroma_ssl: bool = Field(default=False, description="Use SSL for Chroma http connection")
+    chroma_auth_token: SecretStr | None = Field(default=None, description="Bearer token for Chroma http authentication")
+
+    # --- LanceDB ---
+    lancedb_uri: str = Field(
+        default="./lancedb_data",
+        description=(
+            "LanceDB storage URI. Use a local path (e.g. './lancedb_data') for embedded mode, "
+            "or a cloud URI (s3://, gs://, az://) for cloud storage."
+        ),
+    )
+    lancedb_table_prefix: str = Field(
+        default="medha",
+        description="Prefix for LanceDB table names (e.g. 'medha' → 'medha_my_cache').",
+    )
+    lancedb_metric: Literal["cosine", "l2", "dot"] = Field(
+        default="cosine",
+        description="Distance metric for LanceDB vector search: 'cosine' (default), 'l2', or 'dot'.",
+    )
+
+    # --- Azure AI Search ---
+    azure_search_endpoint: str = Field(
+        default="",
+        description="Azure AI Search service endpoint (e.g. https://my-service.search.windows.net).",
+    )
+    azure_search_api_key: SecretStr | None = Field(
+        default=None,
+        description="Azure AI Search API key. If None, uses DefaultAzureCredential (requires azure-identity).",
+    )
+    azure_search_api_version: str = Field(
+        default="2024-05-01-preview",
+        description="Azure AI Search REST API version.",
+    )
+    azure_search_index_name: str = Field(
+        default="medha",
+        description=(
+            "Prefix for Azure Search index names. "
+            "Final index = '{azure_search_index_name}-{collection_name}' "
+            "(e.g. 'medha' + 'my_cache' → 'medha-my-cache'). "
+            "Corresponds to the env var MEDHA_AZURE_SEARCH_INDEX_NAME."
+        ),
+    )
+    azure_search_top_k_candidates: int = Field(
+        default=50,
+        ge=1,
+        le=10000,
+        description=(
+            "Extra candidates retrieved by HNSW before score filtering. "
+            "Added to limit in VectorizedQuery to improve recall without increasing returned results."
+        ),
+    )
+
+    # --- Elasticsearch ---
+    es_hosts: list[str] = Field(
+        default_factory=lambda: ["http://localhost:9200"],
+        description="Elasticsearch node URLs",
+    )
+    es_api_key: SecretStr | None = Field(default=None, description="Elasticsearch API key")
+    es_username: str | None = Field(default=None, description="Elasticsearch basic-auth username")
+    es_password: SecretStr | None = Field(default=None, description="Elasticsearch basic-auth password")
+    es_index_prefix: str = Field(default="medha", description="Prefix for Elasticsearch index names")
+    es_num_candidates: int = Field(
+        default=100, ge=1, le=10000, description="num_candidates for kNN search"
+    )
+    es_timeout: float = Field(default=30.0, gt=0.0, description="Request timeout in seconds")
+
     # --- Quantization search ---
     quantization_rescore: bool = Field(
         default=True,
@@ -186,8 +328,44 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Cache lifecycle ---
+    default_ttl_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "TTL di default in secondi per le nuove entry. "
+            "None = entry immortali (comportamento attuale). "
+            "Può essere sovrascritto entry per entry tramite il parametro ttl di store()."
+        ),
+    )
+    cleanup_interval_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        description=(
+            "Intervallo in secondi per il cleanup automatico delle entry scadute. "
+            "None = nessun cleanup automatico. "
+            "Se impostato, Medha.start() avvia un task asyncio che chiama expire() periodicamente."
+        ),
+    )
+
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
+    batch_embed_concurrency: int = Field(default=1, ge=1, le=10, description="Chunk di embedding processati concorrentemente in store_many().")
+
+    # --- Observability ---
+    collect_stats: bool = Field(
+        default=True,
+        description="Enable collection of cache performance statistics.",
+    )
+    stats_max_latency_samples: int = Field(
+        default=10_000,
+        ge=100,
+        le=1_000_000,
+        description=(
+            "Maximum number of per-request latency samples retained for percentile calculation. "
+            "Older samples are evicted when the buffer is full (FIFO)."
+        ),
+    )
 
     # --- Timeouts ---
     embedding_timeout: float | None = Field(

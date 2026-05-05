@@ -1,8 +1,6 @@
 """Medha - Semantic Memory for AI Text-to-Query systems."""
 
-import contextlib
-
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from medha.backends.memory import InMemoryBackend
 from medha.config import Settings
@@ -13,14 +11,79 @@ from medha.interfaces.storage import VectorStorageBackend
 from medha.l1_cache.memory import InMemoryL1Cache
 from medha.l1_cache.redis_adapter import RedisL1Cache
 from medha.logging import setup_logging
-from medha.types import CacheEntry, CacheHit, CacheResult, QueryTemplate, SearchStrategy
+from medha.types import CacheEntry, CacheHit, CacheResult, CacheStats, QueryTemplate, SearchStrategy, StrategyStats
 
-with contextlib.suppress(ImportError):
+_optional: list[str] = []
+
+try:
+    from medha.backends.qdrant import QdrantBackend
+    _optional.append("QdrantBackend")
+except ImportError:
+    pass
+
+try:
     from medha.backends.pgvector import PgVectorBackend
+    _optional.append("PgVectorBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.elasticsearch import ElasticsearchBackend
+    _optional.append("ElasticsearchBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.vectorchord import VectorChordBackend
+    _optional.append("VectorChordBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.chroma import ChromaBackend
+    _optional.append("ChromaBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.weaviate import WeaviateBackend
+    _optional.append("WeaviateBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.redis_vector import RedisVectorBackend
+    _optional.append("RedisVectorBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.azure_search import AzureSearchBackend
+    _optional.append("AzureSearchBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.backends.lancedb import LanceDBBackend
+    _optional.append("LanceDBBackend")
+except ImportError:
+    pass
+
+try:
+    from medha.embeddings.cohere_adapter import CohereAdapter
+    _optional.append("CohereAdapter")
+except ImportError:
+    pass
+
+try:
+    from medha.embeddings.gemini_adapter import GeminiAdapter
+    _optional.append("GeminiAdapter")
+except ImportError:
+    pass
 
 __all__ = [
     "Medha", "Settings", "CacheHit", "QueryTemplate", "CacheEntry",
-    "CacheResult", "SearchStrategy", "BaseEmbedder", "L1CacheBackend",
-    "VectorStorageBackend", "InMemoryL1Cache", "RedisL1Cache", "setup_logging",
-    "InMemoryBackend", "PgVectorBackend",
-]
+    "CacheResult", "CacheStats", "StrategyStats", "SearchStrategy",
+    "BaseEmbedder", "L1CacheBackend", "VectorStorageBackend",
+    "InMemoryL1Cache", "RedisL1Cache", "setup_logging", "InMemoryBackend",
+] + _optional

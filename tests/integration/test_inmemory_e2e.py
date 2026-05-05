@@ -41,7 +41,8 @@ class TestStoreAndSearch:
         # Second identical search — L1 was populated by the first search
         hit2 = await medha_memory.search("Get user count")
         assert hit2.strategy == SearchStrategy.L1_CACHE
-        assert medha_memory._stats["l1_hits"] >= 1
+        s = await medha_memory.stats()
+        assert s.by_strategy.get("l1_cache") is not None and s.by_strategy["l1_cache"].count >= 1
 
     async def test_no_match_empty(self, medha_memory):
         """Search on empty collection → NO_MATCH."""
@@ -74,10 +75,10 @@ class TestStats:
         await medha_memory.search("Count orders")   # l1 hit
         await medha_memory.search("nonexistent xyz abc 123")  # miss
 
-        stats = medha_memory.stats
-        assert stats["total_requests"] >= 3
-        assert stats["by_strategy"]["l1_hits"] >= 1
-        assert stats["by_strategy"]["misses"] >= 1
+        s = await medha_memory.stats()
+        assert s.total_requests >= 3
+        assert s.by_strategy.get("l1_cache") is not None and s.by_strategy["l1_cache"].count >= 1
+        assert s.total_misses >= 1
 
 
 class TestBackendTypeViaSettings:

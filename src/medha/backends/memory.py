@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from medha.exceptions import StorageError
@@ -65,8 +65,14 @@ class InMemoryBackend(VectorStorageBackend):
         if not entries:
             return []
 
+        now = datetime.now(timezone.utc)
         scored: list[tuple[float, dict[str, Any]]] = []
         for point in entries.values():
+            ea_raw = point["payload"].get("expires_at")
+            if ea_raw is not None:
+                ea = _parse_dt(ea_raw)
+                if ea is not None and ea <= now:
+                    continue
             score = _cosine_similarity(vector, point["vector"])
             score = max(0.0, min(1.0, score))
             if score >= score_threshold:
@@ -99,6 +105,7 @@ class InMemoryBackend(VectorStorageBackend):
                         "template_id": entry.template_id,
                         "usage_count": entry.usage_count,
                         "created_at": entry.created_at.isoformat(),
+                        "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
                     },
                 }
 
@@ -138,6 +145,54 @@ class InMemoryBackend(VectorStorageBackend):
     async def close(self) -> None:
         self._store.clear()
 
+    async def find_expired(self, collection_name: str) -> list[str]:
+        if collection_name not in self._store:
+            return []
+        now = datetime.now(timezone.utc)
+        return [
+            id_
+            for id_, point in self._store[collection_name]["entries"].items()
+            if (ea_raw := point["payload"].get("expires_at"))
+            and (ea := _parse_dt(ea_raw)) is not None
+            and ea < now
+        ]
+
+    async def search_by_normalized_question(
+        self, collection_name: str, normalized_question: str
+    ) -> CacheResult | None:
+        if collection_name not in self._store:
+            raise StorageError(f"Collection '{collection_name}' does not exist.")
+        for point in self._store[collection_name]["entries"].values():
+            if point["payload"]["normalized_question"] == normalized_question:
+                return _point_to_cache_result(point, score=1.0)
+        return None
+
+    async def find_by_query_hash(
+        self, collection_name: str, query_hash: str
+    ) -> list[str]:
+        if collection_name not in self._store:
+            raise StorageError(f"Collection '{collection_name}' does not exist.")
+        return [
+            point["id"]
+            for point in self._store[collection_name]["entries"].values()
+            if point["payload"].get("query_hash") == query_hash
+        ]
+
+    async def find_by_template_id(
+        self, collection_name: str, template_id: str
+    ) -> list[str]:
+        if collection_name not in self._store:
+            raise StorageError(f"Collection '{collection_name}' does not exist.")
+        return [
+            point["id"]
+            for point in self._store[collection_name]["entries"].values()
+            if point["payload"].get("template_id") == template_id
+        ]
+
+    async def drop_collection(self, collection_name: str) -> None:
+        async with self._lock:
+            self._store.pop(collection_name, None)
+
     async def search_by_query_hash(
         self, collection_name: str, query_hash: str
     ) -> CacheResult | None:
@@ -162,13 +217,17 @@ class InMemoryBackend(VectorStorageBackend):
             entries[point_id]["payload"]["usage_count"] += 1
 
 
+def _parse_dt(value: str) -> datetime | None:
+    with contextlib.suppress(ValueError, TypeError):
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
+
+
 def _point_to_cache_result(point: dict[str, Any], score: float) -> CacheResult:
     payload = point["payload"]
-    created_at_raw = payload.get("created_at")
-    created_at: datetime | None = None
-    if created_at_raw:
-        with contextlib.suppress(ValueError, TypeError):
-            created_at = datetime.fromisoformat(created_at_raw)
     return CacheResult(
         id=point["id"],
         score=max(0.0, min(1.0, score)),
@@ -179,5 +238,6 @@ def _point_to_cache_result(point: dict[str, Any], score: float) -> CacheResult:
         response_summary=payload.get("response_summary"),
         template_id=payload.get("template_id"),
         usage_count=payload.get("usage_count", 0),
-        created_at=created_at,
+        created_at=_parse_dt(payload["created_at"]) if payload.get("created_at") else None,
+        expires_at=_parse_dt(payload["expires_at"]) if payload.get("expires_at") else None,
     )

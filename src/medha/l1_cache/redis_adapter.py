@@ -113,6 +113,12 @@ class RedisL1Cache(L1CacheBackend):
         except Exception as exc:
             logger.warning("RedisL1Cache.clear failed: %s", exc)
 
+    async def invalidate(self, key: str) -> None:
+        try:
+            await self._client.delete(self._key(key))
+        except Exception as exc:
+            logger.warning("RedisL1Cache.invalidate failed (key=%s…): %s", key[:8], exc)
+
     @property
     def size(self) -> int:
         """Local size hint — not decremented when Redis evicts entries."""

@@ -6,9 +6,14 @@ cache hits and only calling the LLM on misses.
 
 No actual LLM API calls are made --- costs are estimated from token counts.
 
+Supported models (pricing as of 2026-04, per 1M tokens):
+    gpt-4o      input $2.50  / output $10.00
+    gpt-4o-mini input $0.15  / output $0.60
+
 Usage:
     python experiments/cost_benchmark.py --num-queries 1000 --cache-size 500
     python experiments/cost_benchmark.py --num-queries 5000 --cache-size 1000 --output cost_report.json
+    python experiments/cost_benchmark.py --models gpt-4o-mini,gpt-4o
 """
 
 import asyncio
@@ -31,10 +36,8 @@ from latency_benchmark import paraphrase, generate_unrelated
 # ---------------------------------------------------------------------------
 
 LLM_PRICING = {
-    "gpt-4o": {"input": 2.50, "output": 10.00},
+    "gpt-4o":      {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4-turbo": {"input": 10.00, "output": 30.00},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
 }
 
 # Average tokens per text-to-query interaction (estimated)
@@ -133,7 +136,7 @@ async def run_benchmark(
 
     # --- Setup Medha ---
     embedder = FastEmbedAdapter()
-    # backend_type="memory" — pure-Python backend, no Qdrant needed.
+    # backend_type="memory" — pure-Python backend (default in 0.3.0).
     # This benchmark measures LLM cost savings, not backend performance.
     settings = Settings(backend_type="memory")
     medha = Medha("cost_bench", embedder=embedder, settings=settings)
