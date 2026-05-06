@@ -7,10 +7,12 @@ import logging
 from typing import Any
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
     HAS_GEMINI = True
 except ImportError:
     genai = None  # type: ignore[assignment]
+    genai_types = None  # type: ignore[assignment]
     HAS_GEMINI = False
 
 from medha.exceptions import ConfigurationError, EmbeddingError
@@ -32,7 +34,7 @@ class GeminiAdapter(BaseEmbedder):
         output_dimensionality: Optional dimension truncation.
 
     Raises:
-        ConfigurationError: If the google-generativeai package is not installed.
+        ConfigurationError: If the google-genai package is not installed.
     """
 
     def __init__(
@@ -45,7 +47,7 @@ class GeminiAdapter(BaseEmbedder):
     ) -> None:
         if not HAS_GEMINI:
             raise ConfigurationError(
-                "google-generativeai is required for GeminiAdapter. "
+                "google-genai is required for GeminiAdapter. "
                 "Install it with: pip install medha[gemini]"
             )
         self._model = model
@@ -53,7 +55,7 @@ class GeminiAdapter(BaseEmbedder):
         self._task_type_document = task_type_document
         self._output_dimensionality = output_dimensionality
         self._dimension: int | None = None
-        genai.configure(api_key=api_key)
+        self._client = genai.Client(api_key=api_key)
         logger.info("GeminiAdapter initialized with model '%s'", model)
 
     @property
@@ -72,15 +74,17 @@ class GeminiAdapter(BaseEmbedder):
         """Generate a query embedding via Gemini API (via thread to avoid blocking)."""
         try:
             logger.debug("GeminiAdapter aembed: text_len=%d", len(text))
-            call_kwargs: dict[str, Any] = {
-                "model": self._model,
-                "content": text,
-                "task_type": self._task_type_query,
-            }
-            if self._output_dimensionality is not None:
-                call_kwargs["output_dimensionality"] = self._output_dimensionality
-            result = await asyncio.to_thread(genai.embed_content, **call_kwargs)
-            vector = list(result["embedding"])
+            config = genai_types.EmbedContentConfig(
+                task_type=self._task_type_query,
+                output_dimensionality=self._output_dimensionality,
+            )
+            result = await asyncio.to_thread(
+                self._client.models.embed_content,
+                model=self._model,
+                contents=text,
+                config=config,
+            )
+            vector = list(result.embeddings[0].values)
             self._dimension = len(vector)
             logger.debug("GeminiAdapter aembed: done, dim=%d", self._dimension)
             return vector
@@ -109,15 +113,17 @@ class GeminiAdapter(BaseEmbedder):
             ]
 
             async def _embed_chunk(chunk: list[str]) -> list[list[float]]:
-                call_kwargs: dict[str, Any] = {
-                    "model": self._model,
-                    "content": chunk,
-                    "task_type": task_type,
-                }
-                if self._output_dimensionality is not None:
-                    call_kwargs["output_dimensionality"] = self._output_dimensionality
-                result = await asyncio.to_thread(genai.embed_content, **call_kwargs)
-                return [list(v) for v in result["embedding"]]
+                config = genai_types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=self._output_dimensionality,
+                )
+                result = await asyncio.to_thread(
+                    self._client.models.embed_content,
+                    model=self._model,
+                    contents=chunk,
+                    config=config,
+                )
+                return [list(e.values) for e in result.embeddings]
 
             chunk_results: list[list[list[float]]] = await asyncio.gather(
                 *[_embed_chunk(chunk) for chunk in chunks]

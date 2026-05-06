@@ -92,6 +92,9 @@ class CacheHit(BaseModel):
     template_used: str | None = Field(
         default=None, description="Template intent if matched via template"
     )
+    expires_at: datetime | None = Field(
+        default=None, description="UTC expiry timestamp; None means immortal"
+    )
 
 
 class QueryTemplate(BaseModel):
