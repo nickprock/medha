@@ -110,25 +110,47 @@ class WeaviateBackend(VectorStorageBackend):
             return
         wv_name = _wv_collection_name(self._settings.weaviate_collection_prefix, collection_name)
         try:
-            if not await self._client.collections.exists(wv_name):
-                await self._client.collections.create(
-                    name=wv_name,
-                    properties=[
-                        wvc.config.Property(name="original_question", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="normalized_question", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="generated_query", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="query_hash", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="response_summary", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="template_id", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="usage_count", data_type=wvc.config.DataType.INT),
-                        wvc.config.Property(name="created_at", data_type=wvc.config.DataType.DATE),
-                        wvc.config.Property(name="expires_at", data_type=wvc.config.DataType.DATE),
-                    ],
-                    vectorizer_config=wvc.config.Configure.Vectorizer.none(),
-                    vector_index_config=wvc.config.Configure.VectorIndex.hnsw(
-                        distance_metric=wvc.config.VectorDistances.COSINE
-                    ),
-                )
+            if await self._client.collections.exists(wv_name):
+                # index_null_state is immutable — drop and recreate if it is not set.
+                # Data loss is acceptable: this is a cache.
+                col = self._client.collections.get(wv_name)
+                try:
+                    cfg = await col.config.get()
+                    needs_recreate = not getattr(cfg.inverted_index_config, "index_null_state", False)
+                except Exception:
+                    needs_recreate = False
+                if needs_recreate:
+                    logger.warning(
+                        "Collection '%s' was created without indexNullState=True "
+                        "(required for TTL filters). Dropping and recreating — cached entries will be lost.",
+                        wv_name,
+                    )
+                    await self._client.collections.delete(wv_name)
+                else:
+                    self._collections[collection_name] = col
+                    return
+
+            await self._client.collections.create(
+                name=wv_name,
+                properties=[
+                    wvc.config.Property(name="original_question", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="normalized_question", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="generated_query", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="query_hash", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="response_summary", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="template_id", data_type=wvc.config.DataType.TEXT),
+                    wvc.config.Property(name="usage_count", data_type=wvc.config.DataType.INT),
+                    wvc.config.Property(name="created_at", data_type=wvc.config.DataType.DATE),
+                    wvc.config.Property(name="expires_at", data_type=wvc.config.DataType.DATE),
+                ],
+                inverted_index_config=wvc.config.Configure.inverted_index(
+                    index_null_state=True,
+                ),
+                vectorizer_config=wvc.config.Configure.Vectorizer.none(),
+                vector_index_config=wvc.config.Configure.VectorIndex.hnsw(
+                    distance_metric=wvc.config.VectorDistances.COSINE
+                ),
+            )
             self._collections[collection_name] = self._client.collections.get(wv_name)
         except Exception as e:
             raise StorageInitializationError(
