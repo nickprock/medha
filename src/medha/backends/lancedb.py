@@ -87,8 +87,9 @@ def _distance_to_score(distance: float, metric: str) -> float:
         # LanceDB cosine distance = 1 - cosine_similarity, range [0, 2]
         return 1.0 - distance
     if metric == "l2":
-        # L2 has no fixed upper bound; map to (0, 1] via inverse
-        return 1.0 / (1.0 + distance)
+        # For unit-normalized vectors: L2² = 2*(1 - cosine_sim)
+        # → cosine_sim = 1 - L2²/2, which keeps scores comparable across metrics
+        return max(0.0, 1.0 - (distance ** 2) / 2.0)
     # dot: LanceDB stores negative dot product as distance; negate and clamp
     return max(0.0, -distance)
 
@@ -135,11 +136,7 @@ class LanceDBBackend(VectorStorageBackend):
         schema = _build_schema(dimension)
         self._dimensions[collection_name] = dimension
         try:
-            existing: list[str] = await self._db.list_tables()
-            if table_name in existing:
-                table = await self._db.open_table(table_name)
-            else:
-                table = await self._db.create_table(table_name, schema=schema)
+            table = await self._db.create_table(table_name, schema=schema, exist_ok=True)
             self._tables[collection_name] = table
         except Exception as e:
             raise StorageInitializationError(

@@ -449,11 +449,14 @@ class Medha:
         """Check the L1 cache (pluggable backend).
 
         Key: MD5 hash of normalized question.
-        Returns: CacheHit with strategy=L1_CACHE if found, None otherwise.
+        Returns: CacheHit with strategy=L1_CACHE if found and not expired, None otherwise.
         """
         key = question_hash(question)
         hit = await self._l1_backend.get(key)
         if hit is not None:
+            if hit.expires_at is not None and hit.expires_at <= datetime.now(timezone.utc):
+                await self._l1_backend.invalidate(key)
+                return None
             return hit.model_copy(update={"strategy": SearchStrategy.L1_CACHE})
         return None
 
@@ -578,6 +581,7 @@ class Medha:
                 confidence=r.score,
                 strategy=SearchStrategy.EXACT_MATCH,
                 template_used=r.template_id,
+                expires_at=r.expires_at,
             )
         return None
 
@@ -601,6 +605,7 @@ class Medha:
                 confidence=r.score * 0.9,  # Penalize slightly
                 strategy=SearchStrategy.SEMANTIC_MATCH,
                 template_used=r.template_id,
+                expires_at=r.expires_at,
             )
         return None
 
@@ -680,6 +685,7 @@ class Medha:
                 confidence=best_score / 100.0,
                 strategy=SearchStrategy.FUZZY_MATCH,
                 template_used=best_match.template_id,
+                expires_at=best_match.expires_at,
             )
         return None
 
@@ -756,6 +762,7 @@ class Medha:
                     confidence=1.0,
                     strategy=SearchStrategy.EXACT_MATCH,
                     template_used=template_id,
+                    expires_at=expires_at,
                 ),
             )
 
@@ -1291,7 +1298,7 @@ class Medha:
             ConfigurationError: If pandas is not installed.
         """
         try:
-            import pandas  # noqa: F401
+            import pandas as pd
         except ImportError as exc:
             raise ConfigurationError(
                 "warm_from_dataframe requires pandas: pip install pandas"
@@ -1305,11 +1312,11 @@ class Medha:
             }
             if response_col in df.columns:
                 val = row.get(response_col)
-                if val is not None:
+                if val is not None and pd.notna(val):
                     item["response_summary"] = val
             if template_col is not None and template_col in df.columns:
                 val = row.get(template_col)
-                if val is not None:
+                if val is not None and pd.notna(val):
                     item["template_id"] = val
             rows.append(item)
 

@@ -166,9 +166,9 @@ class RedisVectorBackend(VectorStorageBackend):
         return [
             TextField("original_question"),
             TextField("generated_query"),
-            TagField("normalized_question", separator="\0"),
-            TagField("query_hash", separator="\0"),
-            TagField("template_id", separator="\0"),
+            TagField("normalized_question", separator="|"),
+            TagField("query_hash", separator="|"),
+            TagField("template_id", separator="|"),
             NumericField("usage_count"),
             NumericField("created_at"),
             NumericField("expires_at"),
