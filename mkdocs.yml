@@ -1,0 +1,104 @@
+site_name: Medha
+site_url: https://archai-labs.github.io/medha
+repo_url: https://github.com/ArchAI-Labs/medha
+repo_name: ArchAI-Labs/medha
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+plugins:
+  - search:
+      lang: en
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            members_order: source
+
+markdown_extensions:
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  - javascripts/mathjax.js
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started: getting_started.md
+  - User Guide:
+      - Core Concepts: user_guide/concepts.md
+      - Configuration: user_guide/configuration.md
+      - Backends: user_guide/backends.md
+      - Embedders: user_guide/embedders.md
+      - Templates: user_guide/templates.md
+      - TTL & Lifecycle: user_guide/ttl_and_lifecycle.md
+      - Invalidation: user_guide/invalidation.md
+      - Batch Operations: user_guide/batch_operations.md
+      - Observability: user_guide/observability.md
+  - API Reference:
+      - Medha (Core): api/core.md
+      - Settings: api/config.md
+      - Types: api/types.md
+      - Exceptions: api/exceptions.md
+      - Backends: api/backends.md
+      - Embedders: api/embedders.md
+      - Interfaces (ABCs): api/interfaces.md
+  - Contributing: contributing.md
+  - FAQ: faq.md

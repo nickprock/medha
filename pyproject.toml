@@ -63,6 +63,15 @@ lancedb = ["lancedb>=0.6,<1", "pyarrow>=13"]
 all = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,chroma,weaviate,azure-search,lancedb]"]
 all-no-chroma = ["medha-archai[fastembed,openai,cohere,gemini,nlp,gliner,fuzzy,redis,qdrant,pgvector,elasticsearch,vectorchord,weaviate,azure-search,lancedb]"]
 
+# Documentation
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+    "pymdown-extensions>=10.7",
+    "mike>=2.1",
+]
+
 # Development
 dev = [
     "pytest>=8.0",
