@@ -61,7 +61,7 @@ pip install medha-archai
 ```
 
 Core dependencies: `pydantic`, `pydantic-settings`.  
-> **Breaking change in 0.3.0:** `qdrant-client` is no longer a core dependency. Install it explicitly with `pip install "medha-archai[qdrant]"`. The default `backend_type` is now `"memory"`.
+> **Breaking change in 0.3.1:** `qdrant-client` is no longer a core dependency. Install it explicitly with `pip install "medha-archai[qdrant]"`. The default `backend_type` is now `"memory"`.
 
 ### With an embedding provider
 
