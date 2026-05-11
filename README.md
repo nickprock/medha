@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/medha-archai)](https://pypi.org/project/medha-archai/)
 [![License](https://img.shields.io/github/license/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/ArchAI-Labs/medha)](https://github.com/ArchAI-Labs/medha/stargazers)
+[![Documentation](https://img.shields.io/badge/docs-archai--labs.github.io-blue)](https://archai-labs.github.io/medha/)
 
 <br>
 
