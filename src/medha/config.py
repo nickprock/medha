@@ -347,6 +347,15 @@ class Settings(BaseSettings):
             "Se impostato, Medha.start() avvia un task asyncio che chiama expire() periodicamente."
         ),
     )
+    feedback_incorrect_threshold: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "When set, feedback(correct=False) automatically invalidates the entry "
+            "once feedback_incorrect reaches this value. "
+            "None disables auto-invalidation. Env var: MEDHA_FEEDBACK_INCORRECT_THRESHOLD."
+        ),
+    )
 
     # --- Batch operations ---
     batch_size: int = Field(default=100, ge=1, le=10000, description="Batch size for bulk upsert")
