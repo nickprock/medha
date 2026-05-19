@@ -81,17 +81,24 @@ extra_css:
 
 nav:
   - Home: index.md
-  - Getting Started: getting_started.md
+  - Getting Started:
+      - Overview: getting_started.md
+      - Demos: demos.md
+      - Benchmarks: benchmarks.md
   - User Guide:
       - Core Concepts: user_guide/concepts.md
       - Configuration: user_guide/configuration.md
       - Backends: user_guide/backends.md
       - Embedders: user_guide/embedders.md
       - Templates: user_guide/templates.md
+      - Parameter Extraction: user_guide/parameter_extraction.md
+      - Multi-Tenancy: user_guide/multi_tenancy.md
+      - Security: user_guide/security.md
       - TTL & Lifecycle: user_guide/ttl_and_lifecycle.md
       - Invalidation: user_guide/invalidation.md
       - Batch Operations: user_guide/batch_operations.md
       - Observability: user_guide/observability.md
+      - Framework Integrations: user_guide/framework_integrations.md
   - API Reference:
       - Medha (Core): api/core.md
       - Settings: api/config.md

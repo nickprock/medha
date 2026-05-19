@@ -183,6 +183,56 @@ if __name__ == "__main__":
 
 ---
 
+## Demo Notebooks
+
+Hands-on Jupyter notebooks covering every major feature. Run them locally or open them directly on GitHub.
+
+### Query Languages
+
+| Notebook | Description |
+|---|---|
+| [01 — Text-to-SQL (SQLite)](demo/01_text2sql_sqlite.ipynb) | End-to-end Text-to-SQL with a local SQLite database |
+| [02 — Text-to-Cypher (Neo4j)](demo/02_text2cypher_neo4j.ipynb) | Graph query caching for Neo4j Cypher queries |
+| [03 — Text-to-Query (MongoDB MQL)](demo/03_text2query_mongodb.ipynb) | MongoDB query caching with MQL |
+| [10 — Text-to-SQL (DuckDB)](demo/10_text2sql_duckdb.ipynb) | Analytical SQL caching with DuckDB |
+
+### Embedders
+
+| Notebook | Description |
+|---|---|
+| [04 — Custom Embedder](demo/04_custom_embedder.ipynb) | Implement `BaseEmbedder` for any embedding provider |
+| [07 — Cloud Embedders](demo/07_openai_embedder.ipynb) | OpenAI, Cohere, and Gemini embedding adapters |
+| [05 — NER: spaCy vs GLiNER](demo/05_ner_spacy_vs_gliner.ipynb) | Parameter extraction for template matching |
+
+### Vector Backends
+
+| Notebook | Description |
+|---|---|
+| [11 — InMemory Backend](demo/11_inmemory_backend.ipynb) | Zero-dependency in-process caching |
+| [24 — Qdrant Backend](demo/24_qdrant_backend.ipynb) | Production-grade HNSW with Qdrant (memory / Docker / Cloud) |
+| [12 — pgvector Backend](demo/12_pgvector_backend.ipynb) | PostgreSQL-native vector search |
+| [15 — VectorChord Backend](demo/15_vectorchord_backend.ipynb) | High-throughput PostgreSQL + VectorChord |
+| [14 — Elasticsearch Backend](demo/14_elasticsearch_backend.ipynb) | Full-text + vector search with Elasticsearch 8.x |
+| [16 — Chroma Backend](demo/16_chroma_backend.ipynb) | Lightweight local vector store with ChromaDB |
+| [17 — Weaviate Backend](demo/17_weaviate_backend.ipynb) | Knowledge graph + vector search with Weaviate |
+| [18 — Redis Vector Backend](demo/18_redis_vector_backend.ipynb) | Sub-millisecond semantic caching with Redis Stack |
+| [19 — Azure AI Search Backend](demo/19_azure_search_backend.ipynb) | Managed cloud vector search on Azure |
+| [20 — LanceDB Backend](demo/20_lancedb_backend.ipynb) | Embedded zero-infrastructure vector search |
+
+### Features & Patterns
+
+| Notebook | Description |
+|---|---|
+| [06 — Production Patterns](demo/06_production_patterns.ipynb) | Logging, retries, health checks, and deployment tips |
+| [08 — Fuzzy Matching](demo/08_fuzzy_matching.ipynb) | Tier 4 Levenshtein fallback for typos and variants |
+| [09 — Multi-Tenant Caching](demo/09_multi_tenant.ipynb) | Separate collections per tenant |
+| [13 — Framework Integrations](demo/13_framework_integrations.ipynb) | LangChain, LlamaIndex, and Haystack integration |
+| [21 — Cache Lifecycle](demo/21_cache_lifecycle.ipynb) | TTL, expiry, and invalidation strategies |
+| [22 — Observability](demo/22_observability.ipynb) | Stats, latency percentiles, and logging |
+| [23 — Batch Operations](demo/23_batch_ops.ipynb) | Bulk ingestion, export to DataFrame, and dedup |
+
+---
+
 ## Choosing a Backend
 
 | Backend | Extra | Persistence | Best For |
