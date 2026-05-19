@@ -386,6 +386,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- CLI ---
+    embedder_type: Literal["fastembed", "openai", "cohere", "gemini", "_noop"] = Field(
+        default="_noop",
+        description=(
+            "Embedder to use. '_noop' is the default (no embedding). "
+            "Real embedders require the matching extra. "
+            "Env var: MEDHA_EMBEDDER_TYPE."
+        ),
+    )
+
+    collection: str = Field(
+        default="default",
+        description="Default collection name for CLI commands. Env var: MEDHA_COLLECTION.",
+    )
+
+    fastembed_model: str = Field(
+        default="BAAI/bge-small-en-v1.5",
+        description="FastEmbed model identifier used by the CLI. Env var: MEDHA_FASTEMBED_MODEL.",
+    )
+
     # --- Validators ---
     @field_validator("pg_schema", "pg_table_prefix")
     @classmethod
